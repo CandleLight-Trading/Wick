@@ -1,0 +1,9 @@
+backend/data/
+backend/.venv/
+backend/.pytest_cache/
+backend/__pycache__/
+**/__pycache__/
+frontend/node_modules/
+frontend/dist/
+backend/.env
+.claude/

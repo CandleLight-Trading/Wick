@@ -1,0 +1,9 @@
+@import "tailwindcss";
+
+/* Typography scale. Tailwind sizes are rem-based, so the root size sets the whole app.
+   Comfortable is the default; Compact is the Bloomberg-density option in the header. */
+html { font-size: 16px; }
+html[data-density="compact"] { font-size: 13px; }
+html, body, #root { height: 100%; }
+body { font-family: ui-sans-serif, system-ui, sans-serif; line-height: 1.45; }
+.num { font-variant-numeric: tabular-nums; }
