@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { fmtCompact, fmtPrice, useLocalStorage } from "../store";
 import type { Account, PlanResponse } from "../types";
+import Term from "./Term";
 
 /**
  * The order ticket. Guided (from a Wick setup) or manual (any symbol, your side).
@@ -94,7 +95,7 @@ export default function TradeTicket({ setupId, symbol, side: fixedSide, onClose,
     if (cap && maxSize > 0 && n > maxSize) { setOv({ ...ov, sizeUsd: String(Math.floor(maxSize)) }); setCapped(`Capped at $${Math.floor(maxSize).toLocaleString()}: larger would exceed the account's open-risk or daily-loss limit.`); return; }
     setCapped(null); setOv({ ...ov, sizeUsd: String(Math.round(n)) });
   };
-  const Row = ({ k, v, tone }: { k: string; v: React.ReactNode; tone?: string }) => (
+  const Row = ({ k, v, tone }: { k: React.ReactNode; v: React.ReactNode; tone?: string }) => (
     <><span className="text-zinc-400">{k}</span><span className={`text-right num ${tone ?? "text-zinc-100"}`}>{v}</span></>
   );
 
@@ -150,15 +151,15 @@ export default function TradeTicket({ setupId, symbol, side: fixedSide, onClose,
 
             <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 mb-3">
               <Row k={waiting ? "Entry trigger" : "Entry"} v={fmtPrice(entry)} />
-              <Row k="Stop" v={<>{fmtPrice(stop)} <span className="text-zinc-500">({(Math.abs(entry / stop - 1) * 100).toFixed(2)}% away)</span></>} />
-              <Row k="Target" v={target != null ? fmtPrice(target) : <span className="text-zinc-500">none · manage it yourself</span>} />
-              <Row k="R:R" v={rr != null ? rr.toFixed(2) : "–"} tone={rr == null ? "text-zinc-500" : rr >= 1.5 ? "text-emerald-400" : "text-amber-300"} />
+              <Row k={<Term k="stop" value={Math.abs(entry / stop - 1) * 100}><span className="cursor-help">Stop <span className="text-zinc-600">· invalidation</span></span></Term>} v={<>{fmtPrice(stop)} <span className="text-zinc-500">({(Math.abs(entry / stop - 1) * 100).toFixed(2)}% away)</span></>} />
+              <Row k={<Term k="target"><span className="cursor-help">Target</span></Term>} v={target != null ? fmtPrice(target) : <span className="text-zinc-500">none · manage it yourself</span>} />
+              <Row k={<Term k="rr" value={rr}><span className="cursor-help">Reward / risk <span className="text-zinc-600">· R:R</span></span></Term>} v={rr != null ? `${rr.toFixed(2)}×` : "–"} tone={rr == null ? "text-zinc-500" : rr >= 1.5 ? "text-emerald-400" : "text-amber-300"} />
             </div>
 
             {/* Position size: Wick's recommendation is the default; choosing your own is a deliberate step. */}
             <div className="rounded border border-zinc-800 bg-zinc-900/40 p-3 mb-3">
               <div className="flex items-baseline justify-between">
-                <span className="text-[13px] uppercase tracking-wide text-zinc-500">Position size · exposure</span>
+                <Term k="exposure" value={size} ctx={{ equity: acct.equity }}><span className="text-[13px] uppercase tracking-wide text-zinc-500 cursor-help">Position size · exposure</span></Term>
                 <button onClick={() => { setChooseSize((c) => !c); if (chooseSize) { setOv({ ...ov, sizeUsd: "" }); setCapped(null); } }} className="text-sm text-zinc-400 hover:text-zinc-100">{chooseSize ? "Use Wick's Size" : "Choose My Amount"}</button>
               </div>
               {!chooseSize ? (
@@ -186,9 +187,9 @@ export default function TradeTicket({ setupId, symbol, side: fixedSide, onClose,
             </div>
 
             <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 mb-3">
-              <Row k="Loss if the stop fills" v={<>${riskUsd.toFixed(0)} <span className="text-zinc-500">· {((riskUsd / acct.equity) * 100).toFixed(2)}% of equity</span></>} tone={aboveRec ? "text-amber-300" : "text-zinc-100"} />
-              <Row k="Portfolio risk after" v={`${((acct.openRiskUsd + riskUsd) / acct.equity * 100).toFixed(2)} / ${s.openRiskCapPct.toFixed(1)}%`} tone={(acct.openRiskUsd + riskUsd) / acct.equity * 100 > s.openRiskCapPct ? "text-red-400" : "text-emerald-400"} />
-              <Row k="Daily budget left" v={`$${acct.dailyLossRemainingUsd.toFixed(0)}`} />
+              <Row k={<Term k="riskUsd" value={riskUsd} ctx={{ equity: acct.equity }}><span className="cursor-help">Planned loss <span className="text-zinc-600">· 1R</span></span></Term>} v={<>${riskUsd.toFixed(0)} <span className="text-zinc-500">· {((riskUsd / acct.equity) * 100).toFixed(2)}% of equity</span></>} tone={aboveRec ? "text-amber-300" : "text-zinc-100"} />
+              <Row k={<Term k="openRisk" value={(acct.openRiskUsd + riskUsd) / acct.equity * 100}><span className="cursor-help">Open risk after <span className="text-zinc-600">· all stops</span></span></Term>} v={`${((acct.openRiskUsd + riskUsd) / acct.equity * 100).toFixed(2)} / ${s.openRiskCapPct.toFixed(1)}%`} tone={(acct.openRiskUsd + riskUsd) / acct.equity * 100 > s.openRiskCapPct ? "text-red-400" : "text-emerald-400"} />
+              <Row k={<Term k="dailyLoss"><span className="cursor-help">Daily budget left</span></Term>} v={`$${acct.dailyLossRemainingUsd.toFixed(0)}`} />
               <Row k="Account exposure" v={`${((size / acct.equity) * 100).toFixed(1)}% of equity`} />
             </div>
             {hardBlocked && <div className="rounded border border-red-800 bg-red-950/30 p-2 text-sm text-red-300 mb-3">ACCOUNT RISK LIMIT: {acct.breached ? "account rules already breached" : s.blocks.join("; ")}</div>}

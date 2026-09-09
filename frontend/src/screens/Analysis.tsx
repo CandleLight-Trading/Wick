@@ -81,6 +81,7 @@ function MoverDetails({ m, budget, account, onRun, running }: { m: Mover; budget
   const r = m.rules;
   const a = m.model;
   const agree = r && a && r.stance === a.stance;
+  const cx = { symbol: m.symbol, atrPct: f.atrDailyPct, price: f.price };
   return (
     <section className="rounded border border-zinc-800 p-4 flex flex-col gap-2">
       <div className="flex items-center gap-3 flex-wrap">
@@ -91,19 +92,20 @@ function MoverDetails({ m, budget, account, onRun, running }: { m: Mover; budget
         {agree != null && <span className={`text-xs uppercase tracking-wide px-1.5 rounded ${agree ? "bg-sky-900/40 text-sky-300" : "bg-zinc-800 text-zinc-500"}`}>{agree ? "judges agree" : "judges disagree"}</span>}
         <button onClick={() => navigate("context", { symbol: m.symbol })} className="ml-auto text-sm text-zinc-500 hover:text-zinc-200">Context →</button>
       </div>
-      <div className="grid grid-cols-3 md:grid-cols-5 lg:grid-cols-10 gap-x-2 gap-y-1 text-[13px] num text-zinc-400">
-        <Term k="move"><span className="cursor-help">Move {f.moveAtr != null ? `${f.moveAtr.toFixed(2)} ATR` : "–"}</span></Term>
-        <Term k="volume"><span className="cursor-help">Volume {f.volMultiple != null ? `${f.volMultiple.toFixed(1)}×` : "–"}</span></Term>
-        <Term k="rsi"><span className="cursor-help">RSI {f.rsi != null ? f.rsi.toFixed(0) : "–"}</span></Term>
-        <Term k="funding"><span className="cursor-help">Funding {f.fundingRate != null ? `${(f.fundingRate * 100).toFixed(3)}%` : "–"}</span></Term>
-        <Term k="oi"><span className="cursor-help">OI ${fmtCompact(f.openInterestNotional)}</span></Term>
-        <Term k="divergence"><span className="cursor-help">Kraken Δ {f.divergenceBps != null ? `${f.divergenceBps.toFixed(1)}bps` : "–"}</span></Term>
-        <span title="Share of the last 24h volume that was aggressive (taker) buying; 30-day mean in brackets" className={f.takerBuyRatio24 == null ? "" : f.takerBuyRatio24 > 0.5 ? "text-emerald-400/90" : "text-red-400/90"}>
-          takers {f.takerBuyRatio24 != null ? `${(f.takerBuyRatio24 * 100).toFixed(0)}% buy` : "–"}{f.takerBuyRatio30d != null ? ` (${(f.takerBuyRatio30d * 100).toFixed(0)})` : ""}
-        </span>
-        <Term k="beta"><span className="cursor-help">BTC beta {f.betaBtc != null ? f.betaBtc.toFixed(2) : "–"}</span></Term>
-        <Term k="own"><span className="cursor-help">Own move {f.residual24hPct != null ? fmtPct(f.residual24hPct) : "–"}</span></Term>
-        <Term k="sigma"><span className="cursor-help">Vol/day {f.ewmaDailyVolPct != null ? `${f.ewmaDailyVolPct.toFixed(1)}%` : "–"}</span></Term>
+      <div className="grid grid-cols-3 md:grid-cols-6 lg:grid-cols-11 gap-x-2 gap-y-1 text-[13px] num text-zinc-400">
+        <Term k="move" value={f.moveAtr} ctx={cx}><span className="cursor-help">Move {f.moveAtr != null ? `${f.moveAtr.toFixed(2)} ATR` : "–"}</span></Term>
+        <Term k="atr" value={f.atrDailyPct} ctx={cx}><span className="cursor-help">Typical day {f.atrDailyPct != null ? `${f.atrDailyPct.toFixed(1)}%` : "–"}</span></Term>
+        <Term k="volume" value={f.volMultiple != null ? f.volMultiple >= 1.3 : undefined} detail={f.volMultiple != null ? `${f.volMultiple.toFixed(1)}×` : undefined}><span className="cursor-help">Volume {f.volMultiple != null ? `${f.volMultiple.toFixed(1)}×` : "–"}</span></Term>
+        <Term k="rsi" value={f.rsi != null ? f.rsi > 25 && f.rsi < 75 : undefined} detail={f.rsi != null ? `RSI ${f.rsi.toFixed(0)}` : undefined}><span className="cursor-help">RSI {f.rsi != null ? f.rsi.toFixed(0) : "–"}</span></Term>
+        <Term k="funding" value={f.fundingRate != null ? Math.abs(f.fundingRate) < 0.0005 : undefined} detail={f.fundingRate != null ? `${(f.fundingRate * 100).toFixed(4)}%/8h` : undefined}><span className="cursor-help">Funding {f.fundingRate != null ? `${(f.fundingRate * 100).toFixed(3)}%` : "–"}</span></Term>
+        <Term k="oi" value={f.openInterestNotional}><span className="cursor-help">OI ${fmtCompact(f.openInterestNotional)}</span></Term>
+        <Term k="divergence" value={f.divergenceBps}><span className="cursor-help">Kraken Δ {f.divergenceBps != null ? `${f.divergenceBps.toFixed(1)}bps` : "–"}</span></Term>
+        <Term k="takers" value={f.takerBuyRatio24} className={f.takerBuyRatio24 == null ? "" : f.takerBuyRatio24 > 0.5 ? "text-emerald-400/90" : "text-red-400/90"}>
+          <span className="cursor-help">Buyer urgency {f.takerBuyRatio24 != null ? `${(f.takerBuyRatio24 * 100).toFixed(0)}%` : "–"}{f.takerBuyRatio30d != null ? ` (${(f.takerBuyRatio30d * 100).toFixed(0)})` : ""}</span>
+        </Term>
+        <Term k="beta" value={f.betaBtc} ctx={cx}><span className="cursor-help">BTC beta {f.betaBtc != null ? f.betaBtc.toFixed(2) : "–"}</span></Term>
+        <Term k="own" value={f.residual24hPct} ctx={cx}><span className="cursor-help">Own move {f.residual24hPct != null ? fmtPct(f.residual24hPct) : "–"}</span></Term>
+        <Term k="sigma" value={f.ewmaDailyVolPct} ctx={cx}><span className="cursor-help">Vol/day {f.ewmaDailyVolPct != null ? `${f.ewmaDailyVolPct.toFixed(1)}%` : "–"}</span></Term>
       </div>
       {m.slippage && <SlippageLine s={m.slippage} account={account} rulesPct={r?.suggestedNotionalPct ?? null} />}
       {m.shape && <ShapeBlock s={m.shape} />}
@@ -226,7 +228,7 @@ function MoverCard({ m, budget, account, a, focused }: { m: Mover; budget: numbe
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-[13px]">
         {chips.map((c) => (
-          <Term key={c.name} k={(KEY[c.name] ?? "trend") as never} value={c.ok} detail={c.detail} className={c.ok ? "text-emerald-400/90" : c.ok === false ? "text-red-400/90" : "text-zinc-500"}>
+          <Term key={c.name} k={(KEY[c.name] ?? "trend") as never} value={c.ok} detail={c.detail} ctx={{ symbol: m.symbol, atrPct: f.atrDailyPct }} className={c.ok ? "text-emerald-400/90" : c.ok === false ? "text-red-400/90" : "text-zinc-500"}>
             <span className="cursor-help">{c.name} {c.ok ? "✓" : c.ok === false ? "✗" : "·"}</span>
           </Term>
         ))}

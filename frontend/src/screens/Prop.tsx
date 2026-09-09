@@ -321,7 +321,7 @@ export default function Prop() {
                   <div className="flex flex-wrap items-center gap-3 text-[17px]">
                     <button onClick={() => navigate("charts", { symbol: t.symbol })} className="font-semibold hover:underline">{t.symbol}</button>
                     <span className={`uppercase text-sm ${t.side === "long" ? "text-emerald-400" : "text-red-400"}`}>{t.side.toUpperCase()}</span>
-                    <span className={`num ${(t.unrealizedUsd ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>{(t.unrealizedUsd ?? 0) >= 0 ? "+" : ""}${(t.unrealizedUsd ?? 0).toFixed(0)} · {t.unrealizedR != null ? `${t.unrealizedR >= 0 ? "+" : ""}${t.unrealizedR.toFixed(2)}R` : ""}</span>
+                    <span className={`num ${(t.unrealizedUsd ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>{(t.unrealizedUsd ?? 0) >= 0 ? "+" : ""}${(t.unrealizedUsd ?? 0).toFixed(0)} · {t.unrealizedR != null ? <Term k="r" value={t.unrealizedR} ctx={{ riskUsd: t.risk_usd }}><span className="cursor-help">{`${t.unrealizedR >= 0 ? "+" : ""}${t.unrealizedR.toFixed(2)}R`}</span></Term> : ""}</span>
                     <span className={`text-sm font-semibold tracking-wide ${st.tone}`}>{st.label}</span>
                     <span className="text-sm text-zinc-500 num">{t.opened_at ? `${Math.floor((Date.now() / 1000 - t.opened_at) / 3600)}h held` : ""}</span>
                     {t.payload.againstAdvice && <span className="text-xs uppercase text-amber-400/80" title="Opened against Wick's advice">Against advice</span>}

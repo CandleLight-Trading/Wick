@@ -1,146 +1,260 @@
 /**
- * Plain-English explanations for the terms Wick uses, plus what the current value implies.
- * Every entry answers two questions: what is this, and what does this number mean here?
+ * Plain-English explanations for the terms Wick uses, built the way a concept is actually
+ * learned: intuition first, then what the number on screen means here, then the formal term.
+ *
+ *   title   the idea in plain words ("Typical movement")
+ *   term    the vocabulary being taught ("ATR · Average True Range")
+ *   here    what the current value implies, when a value is known (deterministic templates)
+ *   what    the intuition, one or two sentences, and why it matters to the decision
+ *   formal  the definition, last, so the jargon lands after the idea
+ *
+ * Observation is kept apart from prediction: nothing here says what price "will" do.
  */
-export type Gloss = { title: string; what: string; here?: string };
+export type Gloss = { title: string; term?: string; here?: string; what: string; formal?: string };
+export type Ctx = { symbol?: string; atrPct?: number | null; price?: number | null; equity?: number | null; riskUsd?: number | null };
 
-const pct = (v: unknown, d = 1) => (typeof v === "number" ? `${v >= 0 ? "+" : ""}${v.toFixed(d)}%` : "–");
+const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const pct = (v: unknown, d = 1) => (num(v) ? `${v >= 0 ? "+" : ""}${v.toFixed(d)}%` : "–");
+const sym = (c?: Ctx) => c?.symbol?.replace("USDT", "") ?? "This coin";
 
-export const GLOSSARY: Record<string, (v?: unknown, extra?: string) => Gloss> = {
-  trend: (ok) => ({
-    title: "Trend",
-    what: "Whether the price is above or below its important moving averages (20, 50 and 200 hours). Above all of them is an uptrend, below all of them a downtrend, mixed means no clear direction.",
-    here: ok === true ? "Here: price direction agrees with the averages, so there is a trend to join." : ok === false ? "Here: the averages disagree, so there is no clean trend. Wick will not take a side on trend alone." : undefined,
+export const GLOSSARY: Record<string, (v?: unknown, extra?: string, ctx?: Ctx) => Gloss> = {
+  // ---- the seven checks on a setup card (value = pass/fail, extra = the check's detail) ----
+  trend: (ok, detail) => ({
+    title: "Direction",
+    term: "Trend · price vs 20 / 50 / 200-hour moving averages",
+    here: ok === true ? `Price is on the same side of all three averages${detail ? ` (${detail})` : ""}: it has been moving one way rather than oscillating, so there is a direction to join.`
+        : ok === false ? `The averages disagree${detail ? ` (${detail})` : ""}: price has been oscillating rather than going somewhere. Wick will not take a side on direction alone.` : undefined,
+    what: "Has this coin been consistently going somewhere, or wobbling around the same level? A move in the direction of an existing trend has the wind behind it; a move against it is fighting the tape.",
+    formal: "Trend here means price is above (uptrend) or below (downtrend) its 20, 50 and 200-hour moving averages. Mixed means no clear direction.",
   }),
   volume: (ok, detail) => ({
-    title: "Volume",
-    what: "How much trading is happening compared with this coin's own 30-day average. A move on unusually high volume is more likely to be real than one on thin volume.",
-    here: ok === true ? `Here: volume is elevated${detail ? ` (${detail})` : ""}, so the move has participation behind it.` : ok === false ? `Here: volume is ordinary${detail ? ` (${detail})` : ""}, so the move is not confirmed by activity.` : undefined,
+    title: "How unusual is today's activity?",
+    term: "Relative volume · last 24h vs 30-day average",
+    here: ok === true ? `Trading activity is elevated${detail ? ` (${detail} its normal level)` : ""}: this move is attracting substantially more participation than usual.`
+        : ok === false ? `Activity is ordinary${detail ? ` (${detail} its normal level)` : ""}: the move has not drawn a crowd, which makes it easier to fade.` : undefined,
+    what: "A busy day means many participants are acting on the same thing, so the move is more likely to be real than a quiet-day drift. High volume strengthens the significance of a move; direction still depends on price and flow.",
+    formal: "Relative volume compares the last 24 hours of volume with the coin's own average over the last 30 days. Wick asks for at least 1.3× to confirm a move.",
   }),
   funding: (ok, detail) => ({
-    title: "Funding",
-    what: "A periodic payment between traders holding perpetual futures. Very positive funding means longs are crowded and paying to stay in; very negative means shorts are crowded. Crowded positioning raises the chance of a sharp squeeze the other way.",
-    here: ok === true ? `Here: funding is near neutral${detail ? ` (${detail})` : ""}, so positioning is not heavily crowded either way.` : ok === false ? `Here: funding is stretched${detail ? ` (${detail})` : ""}, so one side is crowded and a squeeze is possible.` : undefined,
+    title: "Which side is crowded?",
+    term: "Funding rate · perpetual futures, per 8 hours",
+    here: ok === true ? `Funding is near neutral${detail ? ` (${detail})` : ""}: neither side is paying much to hold, so positioning is not stretched.`
+        : ok === false ? `Funding is stretched${detail ? ` (${detail})` : ""}: one side is paying up to stay in. A crowded side is fuel for a sharp move the other way.` : undefined,
+    what: "Perpetual futures never expire, so every eight hours one side pays the other to keep the contract near spot. Persistent positive funding means longs are crowded and paying; negative means shorts are. Modest funding is normal. Extreme funding is a warning about who gets squeezed.",
+    formal: "The funding rate is the periodic payment between long and short perpetual-futures holders, quoted per 8 hours. Wick flags it as crowded beyond a threshold in either direction.",
   }),
   rsi: (ok, detail) => ({
-    title: "RSI",
-    what: "Relative Strength Index, a 0 to 100 score of short-term momentum. Above 70 is stretched to the upside, below 30 stretched to the downside. Stretched readings often precede a pause or reversal, but can stay stretched in strong trends.",
-    here: ok === true ? `Here: RSI is not at an extreme${detail ? ` (${detail})` : ""}, so momentum is not yet exhausted.` : ok === false ? `Here: RSI is at an extreme${detail ? ` (${detail})` : ""}, so entering now often means chasing.` : undefined,
+    title: "Recent momentum",
+    term: "RSI · Relative Strength Index, hourly, 0–100",
+    here: ok === true ? `Momentum is not at an extreme${detail ? ` (${detail})` : ""}: recent moves have not been one-sided enough to suggest exhaustion.`
+        : ok === false ? `Momentum is stretched${detail ? ` (${detail})` : ""}: price has moved unusually consistently one way. That is strong momentum, not a reversal signal by itself, but entering here often means chasing.` : undefined,
+    what: "How one-sided recent price action has been. Above 70 the last stretch was mostly up; below 30 mostly down. Strong trends stay stretched for a long time, so Wick uses it as a filter against chasing, never as a trigger to fade.",
+    formal: "RSI compares the size of recent up-moves with recent down-moves over a 14-bar window, scaled 0 to 100.",
   }),
-  move: (ok, detail) => ({
-    title: "Move",
-    what: "Today's price change measured against how much this coin normally moves in a day (its ATR). 1 ATR is a typical day; 3 ATR is an unusually large one.",
-    here: ok === true ? `Here: the move is meaningful${detail ? ` (${detail})` : ""}, big enough to matter relative to normal.` : ok === false ? `Here: the move is small${detail ? ` (${detail})` : ""}, within normal daily noise.` : undefined,
+  move: (ok, detail, ctx) => ({
+    title: "How big is this move for this coin?",
+    term: "Move in ATR · today's change ÷ typical daily range",
+    here: num(ok) ? interpretMove(ok, ctx)
+        : ok === true ? `The move is meaningful${detail ? ` (${detail})` : ""}: larger than this coin's ordinary daily noise.`
+        : ok === false ? `The move is small${detail ? ` (${detail})` : ""}: within what this coin does on an ordinary day, so it may mean nothing yet.` : undefined,
+    what: "A 5% day is dramatic for Bitcoin and unremarkable for a small coin. Measuring the move against the coin's own typical daily range says whether anything unusual is happening. Around 1 ATR is a normal day; 3 ATR is an event, and also a warning about entering late.",
+    formal: "The change since yesterday's close divided by the 14-day Average True Range. Wick asks for at least 0.5 ATR to count a move as meaningful, and treats more than 1 ATR as extended.",
   }),
   flow: (ok, detail) => ({
-    title: "Flow",
-    what: "Which side is being aggressive. Taker buyers cross the spread to buy now; taker sellers do the opposite. Above 50% buying means buyers are pressing, below 50% sellers are.",
-    here: ok === true ? `Here: aggressive flow agrees with the trend${detail ? ` (${detail})` : ""}.` : ok === false ? `Here: aggressive flow disagrees with the trend${detail ? ` (${detail})` : ""}, which weakens the case.` : "Here: no clear reading yet.",
+    title: "Who is being more aggressive?",
+    term: "Taker flow · share of volume that was aggressive buying",
+    here: ok === true ? `Aggressors agree with the trend${detail ? ` (${detail})` : ""}: the side in a hurry is the side the trade is on.`
+        : ok === false ? `Aggressors disagree with the trend${detail ? ` (${detail})` : ""}: the people crossing the spread are on the other side, which weakens the case.` : "No clear reading yet.",
+    what: "Every trade has a patient side that placed a resting order and an urgent side that crossed the spread to hit it. The urgent side tells you who is in a hurry. Above 50% buyers were pressing; below, sellers were. This is not 'x% of traders are bullish'; it is who paid to act now.",
+    formal: "Taker flow is taker-buy volume divided by total volume over the last 24 hours, compared with the coin's own 30-day baseline.",
   }),
   shape: (ok, detail) => ({
-    title: "Shape",
-    what: "The price pattern Wick detected over the last three days, from the geometry of the move: clean trend, breakout, squeeze, blow-off, dead-cat bounce and so on. Patterns describe what happened; they do not promise what happens next.",
-    here: ok === true ? `Here: the pattern does not argue against the trade${detail ? ` (${detail})` : ""}.` : ok === false ? `Here: the pattern argues against it${detail ? ` (${detail})` : ""}.` : undefined,
+    title: "What does the last three days look like?",
+    term: "Shape · regression slope, efficiency ratio, variance ratio",
+    here: ok === true ? `The pattern does not argue against the trade${detail ? ` (${detail})` : ""}.`
+        : ok === false ? `The pattern argues against it${detail ? ` (${detail})` : ""}: this geometry has more often exhausted than continued.` : undefined,
+    what: "The geometry of the recent move, given a name: clean trend, flag, squeeze, blow-off, capitulation, chop. Wick also checks how the same shape resolved on this coin before. A shape describes what happened; it does not promise what happens next.",
+    formal: "Labels come from the slope and fit of a rolling regression, the efficiency ratio (net progress ÷ total travel), the variance ratio, bandwidth compression, and volume climax over the last 72 hourly bars.",
   }),
+
+  // ---- the three boxes on a setup card ----
   quantSignal: (v) => ({
-    title: "Quant Signal",
-    what: "Wick's rules-based view using current market data only: trend, volume, funding, RSI, move, flow and shape. It updates every scan for free and includes no web research. LONG means the rules favor a long setup, SHORT a short setup, FLAT means not enough evidence to take a side.",
-    here: v === "long" ? "Here: the rules favor a long. Research it before acting." : v === "short" ? "Here: the rules favor a short. Research it before acting." : "Here: the rules see no side worth taking on the numbers alone.",
+    title: "What the numbers say on their own",
+    term: "Quant Signal · deterministic playbook rules, no AI",
+    here: v === "long" ? "The current data mechanically favors a long setup. This is an evidence classification from fixed rules, not a prediction and not a promise."
+        : v === "short" ? "The current data mechanically favors a short setup. An evidence classification from fixed rules, not a prediction."
+        : "No playbook's checks all pass right now. The numbers alone do not justify a side.",
+    what: "Wick checks every coin against six playbooks: trend continuation, pullback, relative strength, momentum breakout, blow-off reversal, crowded squeeze. The first whose checks all pass gives the signal. Every check is shown, so a near miss is visible.",
+    formal: "Recomputed every scan from stored exchange candles. LONG, SHORT or FLAT, with the matched playbook and its risk character (standard, moderate, aggressive).",
   }),
   aiResearch: () => ({
-    title: "AI Research",
-    what: "A one-off web and news check by the model, run only when you click Research. It is cached with a timestamp. CURRENT is under two hours old, AGING under six, STALE means time passed or the market moved materially since, so refresh before acting on it.",
+    title: "What is happening outside the chart",
+    term: "AI Research · bounded web search, on request only",
+    what: "One model call, at most three web searches, that classifies fresh external information for the setup as SUPPORTIVE, NEUTRAL or ADVERSE. NEUTRAL means nothing material was found, and that does not by itself invalidate a strong quantitative setup. It runs only when you press Research.",
+    formal: "Research ages: CURRENT under two hours, AGING under six, STALE when time has passed or the market moved materially since (price beyond a daily ATR, shape changed, signal flipped). Stale is labelled, never refreshed on its own.",
   }),
   wickVerdict: () => ({
-    title: "Wick Verdict",
-    what: "The synthesis of the quant signal and the research: ENTER (build the trade), WAIT (thesis holds but not at this price), or PASS (do not trade this). If research is missing or stale, the verdict is to research first.",
+    title: "Wick's advice, in one word",
+    term: "Wick Verdict · ENTER, WAIT or PASS",
+    what: "The quant signal, modified by research. ENTER: build the trade. WAIT: the direction is attractive but the price is not, usually because the move is already extended; Wick watches for the better entry. PASS: the reward is too small for the planned loss, or research found something material. It is advice: Take It Anyway is always available.",
+    formal: "Veto → PASS. Weaken → WAIT. Otherwise the playbook's own entry action. With no matching playbook: WAIT if research is supportive, else PASS.",
   }),
   mainConcern: () => ({
-    title: "Main concern",
-    what: "The first rules check that failed. It is the single biggest reason Wick is not fully convinced, spelled out in plain English.",
+    title: "The biggest reason Wick is not convinced",
+    term: "Main concern · first failing check",
+    what: "The first playbook check that failed, spelled out. It is the one thing that would most change the picture if it flipped.",
   }),
-  atr: (v) => ({
-    title: "ATR",
-    what: "Average True Range: how much this coin typically moves in a day, including gaps. Wick uses it as the yardstick for 'big' or 'small', and to place stops outside normal noise.",
-    here: typeof v === "number" ? `Here: a typical day moves about ${v.toFixed(2)}%.` : undefined,
+  quality: (v) => ({
+    title: "How clean does the setup look?",
+    term: "Setup quality · share of checks passing",
+    here: typeof v === "string" ? `${v.toUpperCase()}: ${v === "strong" ? "nearly every check passes." : v === "mixed" ? "about half the checks pass." : "few checks pass."}` : undefined,
+    what: "How many of the playbook's checks pass. It says how tidy the evidence is on the numbers, not whether to trade it.",
   }),
-  r: () => ({
-    title: "R",
-    what: "Result measured in units of the risk you planned. +2R means you made twice what you would have lost at your stop; −1R means the stop was hit. It lets trades of different sizes be compared fairly.",
-  }),
-  rr: (v) => ({
-    title: "R:R",
-    what: "Reward-to-risk: distance to the target divided by distance to the stop. At 2.0 you stand to make twice what you risk. Wick advises against trades under 1.5.",
-    here: typeof v === "number" ? `Here: ${v.toFixed(2)}, ${v >= 1.5 ? "acceptable" : "thin"}.` : "Here: no target, so no ratio.",
-  }),
-  stop: () => ({
-    title: "Stop (invalidation)",
-    what: "The price where the idea is proven wrong and the position is closed automatically. Wick places it beyond the recent swing plus a buffer, so ordinary noise does not trigger it.",
-  }),
-  target: () => ({
-    title: "Target",
-    what: "A price where taking profit is reasonable, drawn from structure such as the week's high or how far this pattern usually travels on this coin. Reaching it is flagged; closing is your decision.",
-  }),
-  exposure: () => ({
-    title: "Position size (exposure)",
-    what: "The market value you hold, not the cash you would have to put up. Gains and losses are calculated on this number.",
-  }),
-  riskUsd: () => ({
-    title: "Loss if the stop fills",
-    what: "The dollars you lose if price hits the stop. Wick sizes positions so this equals a chosen share of your equity (0.5 to 1 percent) instead of asking how much you want to spend.",
-  }),
-  openRisk: (v) => ({
-    title: "Open risk",
-    what: "The sum of what every open position would lose if all their stops filled at once, as a share of equity. Capped at 3% so a bad day cannot breach the account.",
-    here: typeof v === "number" ? `Here: ${v.toFixed(2)}% of equity is at risk right now.` : undefined,
-  }),
-  drawdown: (v) => ({
-    title: "Drawdown",
-    what: "How far equity has fallen from its highest point. Prop challenges end the account when this exceeds a limit, usually 8 to 10 percent.",
-    here: typeof v === "number" ? `Here: ${v.toFixed(2)}% below the peak.` : undefined,
-  }),
-  dailyLoss: () => ({
-    title: "Daily loss limit",
-    what: "The most an account may lose in one day before the challenge fails. Wick refuses trades whose stop-out would breach what is left of today's budget.",
+
+  // ---- the metric strip in Quant Details (value = the number) ----
+  atr: (v, _e, ctx) => ({
+    title: "Typical movement",
+    term: "ATR · Average True Range, 14 days",
+    here: num(v) ? `${sym(ctx)} has recently moved about ${v.toFixed(1)}% per day under normal conditions. A ${(v / 4).toFixed(1)}% move is fairly ordinary; a ${(v * 3).toFixed(0)}% move would be unusually large.` : undefined,
+    what: "How much this coin normally thrashes around in a day. Wick measures every move, stop and target in this unit, so 'big' and 'small' mean the same thing on every coin, and stops sit outside ordinary noise.",
+    formal: "ATR averages the full daily range, including any gap from the prior close, over 14 days.",
   }),
   unusualness: (v) => ({
-    title: "Unusualness",
-    what: "How far from normal this coin's current state is: move in ATR units, volume multiple, funding crowding and cross-venue divergence, added together. Higher means more worth a look, not more worth buying.",
-    here: typeof v === "number" ? `Here: ${v.toFixed(2)}.` : undefined,
+    title: "How far from normal is this coin right now?",
+    term: "Unusualness score",
+    here: num(v) ? `${v.toFixed(2)}: ${v < 1 ? "close to an ordinary day." : v < 3 ? "noticeably out of the ordinary." : "far outside its normal behavior."} Higher means more worth a look, not more worth buying.` : undefined,
+    what: "Move in ATR, the volume multiple, funding crowding and cross-venue divergence, added together. It ranks what deserves attention; it says nothing about direction.",
   }),
-  oi: () => ({ title: "Open interest", what: "The total value of perpetual-futures positions currently open. Rising open interest with a move means new money is joining it; falling means positions are closing." }),
-  divergence: () => ({ title: "Kraken divergence", what: "Kraken's price minus Binance's, in basis points (1 bp = 0.01%). Usually tiny; a large gap can mean one venue is lagging or thin." }),
-  takers: () => ({ title: "Taker buy share", what: "The share of the last 24 hours' volume that came from buyers crossing the spread. Above 50% buyers were pressing, below 50% sellers were." }),
-  beta: () => ({ title: "BTC beta", what: "How much this coin moves when Bitcoin moves, over the last 60 days. 1.5 means it tends to move 1.5 times as much as Bitcoin." }),
-  own: () => ({ title: "Own move", what: "Today's change after removing the part explained by Bitcoin. A big own move means the coin is moving for its own reasons, not just with the market." }),
-  sigma: () => ({ title: "Vol per day", what: "A forecast of one day's typical swing, in percent, weighted toward recent days. Used to size positions so a normal day costs the same budget on every coin." }),
-  slippage: () => ({ title: "Slippage", what: "How much worse than the mid price you would actually fill, from walking through the order book at your size. Thin books cost more." }),
-  change24h: (v) => ({ title: "24h change", what: "Price change over the last 24 hours, a rolling window ending now.", here: `Here: ${pct(v)}.` }),
-  quality: (v) => ({
-    title: "Setup quality",
-    what: "How many of Wick's rules checks pass. STRONG passes nearly all, MIXED passes about half, WEAK passes few. It says how clean the setup looks on the numbers, not whether to trade it.",
-    here: typeof v === "string" ? `Here: ${v.toUpperCase()}.` : undefined,
+  oi: (v) => ({
+    title: "How much leveraged money is in this coin?",
+    term: "Open interest · notional value of open perpetual positions",
+    here: num(v) ? `About $${compact(v)} of perpetual positions are open. Rising open interest during a move means new money is joining it; falling means positions are closing.` : undefined,
+    what: "The total size of futures bets currently open. On its own it has no direction; its change during a move tells you whether the move is being built or unwound.",
+  }),
+  divergence: (v) => ({
+    title: "Do the venues agree on the price?",
+    term: "Cross-exchange divergence · Kraken minus Binance, basis points",
+    here: num(v) ? `${v.toFixed(1)} bps (${(v / 100).toFixed(2)}%). ${Math.abs(v) < 10 ? "Ordinary; the venues agree." : "Unusually wide; one venue may be lagging or thin."}` : undefined,
+    what: "Usually the same coin trades at almost the same price everywhere. A large gap means one venue is lagging, thin, or seeing flow the other is not.",
+    formal: "1 basis point = 0.01%.",
+  }),
+  takers: (v) => ({
+    title: "Who is being more aggressive?",
+    term: "Taker buy share · last 24 hours",
+    here: num(v) ? `${(v * 100).toFixed(0)}% of taker volume came from buyers: ${v > 0.55 ? "buyers are crossing the spread more urgently than sellers." : v < 0.45 ? "sellers are crossing the spread more urgently than buyers." : "neither side is clearly more urgent."}` : undefined,
+    what: "Market orders consume resting liquidity; whoever sends them is in a hurry. This says who is urgent, not how many people are bullish.",
+  }),
+  beta: (v, _e, ctx) => ({
+    title: "How hard does it react to Bitcoin?",
+    term: "Beta to BTC · 60-day daily returns",
+    here: num(v) ? `Historically, when Bitcoin moves 1%, ${sym(ctx)} has tended to move about ${v.toFixed(1)}% in the same direction over the measured window.` : undefined,
+    what: "Most coins move with Bitcoin to some degree. Beta says how much. It is a tendency over a window, not a law, and it says nothing about the coin's own news.",
+  }),
+  own: (v, _e, ctx) => ({
+    title: "How much of the move is the coin's own?",
+    term: "Residual move · 24h change minus beta × BTC's change",
+    here: num(v) ? `${pct(v)} after removing what Bitcoin's move would explain. ${Math.abs(v) > 3 ? `${sym(ctx)} is moving for its own reasons, not just with the market.` : "Most of today's move is the market, not this coin."}` : undefined,
+    what: "A coin up 4% on a day Bitcoin is up 4% has done nothing unusual. Subtracting the market's share leaves the part that needs its own explanation.",
+  }),
+  sigma: (v, _e, ctx) => ({
+    title: "How big is a normal day, right now?",
+    term: "Daily volatility forecast · exponentially weighted",
+    here: num(v) ? `A normal day for ${sym(ctx)} is currently about ±${v.toFixed(1)}%, weighted toward recent days.` : undefined,
+    what: "Like ATR, but leaning on recent days, so it responds faster when a coin gets wilder or calmer. Wick can size positions so that a normal day costs the same budget on every coin.",
+  }),
+  slippage: (v) => ({
+    title: "What will it actually cost to get in?",
+    term: "Slippage · fill price vs displayed price, from the order book",
+    here: num(v) ? `A market order at your size is estimated to fill about ${(v / 100).toFixed(2)}% worse than the displayed price.` : undefined,
+    what: "The displayed price is the best resting order. A larger order walks through several levels, each a little worse. Thin books cost more. Wick adds the estimate to the entry so the plan is honest.",
+  }),
+  change24h: (v) => ({ title: "Change over the last day", term: "24h change · rolling window ending now", here: `${pct(v)} over the last 24 hours.`, what: "A rolling window, not the calendar day, so it moves continuously." }),
+
+  // ---- the ticket and the account (value = the number) ----
+  r: (v, _e, ctx) => ({
+    title: "One unit of the risk you agreed to take",
+    term: "R · planned loss at the stop",
+    here: num(ctx?.riskUsd) ? `You are risking $${ctx!.riskUsd!.toFixed(0)} if the stop fills. That $${ctx!.riskUsd!.toFixed(0)} is 1R. A $${(ctx!.riskUsd! * 2).toFixed(0)} profit would be +2R; the stop is −1R.` : num(v) ? `${v >= 0 ? "+" : ""}${v.toFixed(2)}R: ${Math.abs(v).toFixed(2)} times the loss you had planned at the stop.` : undefined,
+    what: "Instead of comparing arbitrary dollar amounts, results are counted in units of the loss you planned. A +2R trade on a small position and on a large one are the same quality of decision.",
+  }),
+  rr: (v) => ({
+    title: "What the target pays for what the stop can lose",
+    term: "Reward / Risk · target distance ÷ stop distance",
+    here: num(v) ? `This plan targets $${v.toFixed(2)} of potential profit for every $1.00 planned at risk. ${v >= 1.5 ? "Acceptable." : "Thin: Wick advises against plans under 1.5×, though you may take it."} It does not say the trade is likely to win; it describes the payoff if the stop and target are reached as planned.` : "No target, so no ratio: you would manage the exit yourself.",
+    what: "A plan can be right often and still lose money if the wins are small and the losses are full size. The ratio keeps the payoff honest before the trade exists.",
+  }),
+  stop: (v) => ({
+    title: "The price at which the idea is wrong",
+    term: "Stop · invalidation",
+    here: num(v) ? `The stop sits ${v.toFixed(2)}% from entry. Once the position is open, Wick fills it automatically, like a real account: the stop is an order, not an intention.` : undefined,
+    what: "Not the price at which you feel uncomfortable; the price at which the reason for the trade no longer exists. Wick places it beyond the recent swing plus a buffer, so ordinary noise does not trigger it, and sets it before size, never after.",
+  }),
+  target: () => ({
+    title: "Where taking profit is reasonable",
+    term: "Target · structural level",
+    what: "Drawn from structure: the week's high, a prior swing, or how far this shape usually travels on this coin. Reaching it is flagged; closing is your decision.",
+  }),
+  exposure: (v, _e, ctx) => ({
+    title: "How much market you are holding",
+    term: "Position size · notional exposure",
+    here: num(v) && num(ctx?.equity) ? `$${Math.round(v).toLocaleString()}, about ${((v / ctx!.equity!) * 100).toFixed(0)}% of the account's equity, is exposed to this coin's moves. Gains and losses are calculated on this number.` : undefined,
+    what: "Wick works backward: it takes the loss you are willing to bear at the stop and divides by the stop distance. A far stop means a smaller position; a volatile coin sizes itself down automatically.",
+  }),
+  riskUsd: (v, _e, ctx) => ({
+    title: "Planned loss",
+    term: "Position risk · 1R",
+    here: num(v) ? `If the stop is reached as planned, this trade loses about $${v.toFixed(0)}${num(ctx?.equity) ? `, ${((v / ctx!.equity!) * 100).toFixed(2)}% of the account` : ""}. That is 1R for this trade.` : undefined,
+    what: "The one number chosen deliberately. Wick sizes the position so a stop-out costs a fixed slice of equity (0.5% to 1% by profile, at most 0.5% for aggressive playbooks) instead of asking how much you want to spend.",
+  }),
+  openRisk: (v) => ({
+    title: "What every open stop would cost at once",
+    term: "Open risk · sum of planned losses, % of equity",
+    here: num(v) ? `Your open positions could lose about ${v.toFixed(2)}% of equity if every planned stop were reached. The cap is 3%.` : undefined,
+    what: "Not the current unrealized P&L; the combined planned loss across positions. It is what a bad day costs, and the cap is one of only two rules in Wick that block a trade outright.",
+  }),
+  drawdown: (v) => ({
+    title: "How far below your high-water mark",
+    term: "Drawdown · decline from peak equity",
+    here: num(v) ? `The account is ${v.toFixed(2)}% below its highest recorded equity.` : undefined,
+    what: "Measured from the peak, including open positions, not from the starting balance. A winning streak raises the bar. Prop challenges end the account when this exceeds a limit, usually 8 to 10 percent.",
+  }),
+  dailyLoss: () => ({
+    title: "How much today is still allowed to lose",
+    term: "Daily loss limit · remaining budget",
+    what: "Lose this much in one day and trading stops until tomorrow. Wick refuses a trade whose stop-out would breach what is left of today's budget: the other rule that blocks outright.",
   }),
 };
+
+function interpretMove(v: number, ctx?: Ctx): string {
+  const a = Math.abs(v);
+  const size = a < 0.5 ? "within ordinary daily noise" : a < 1 ? "a normal day's worth of movement" : a < 2 ? "more than a typical day" : "far outside this coin's normal short-term movement";
+  const tail = a > 1 ? " Entering here carries more risk of chasing an already-extended move." : "";
+  const pctTxt = num(ctx?.atrPct) ? ` (about ${(a * ctx!.atrPct!).toFixed(1)}% when a typical day is ${ctx!.atrPct!.toFixed(1)}%)` : "";
+  return `${sym(ctx)} has moved ${v >= 0 ? "+" : "−"}${a.toFixed(2)} ATR since yesterday's close${pctTxt}: ${size}.${tail}`;
+}
+
+const compact = (x: number) => Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(x);
 
 /** Plain-English reason for the first failing check, using the check's own detail. */
 export function explainConcern(name: string, detail?: string): string {
   const d = detail ? ` (${detail})` : "";
-  if (name.startsWith("Trend")) return `Trend is weak — price is not consistently holding above or below its key moving averages, so there is no clear direction to join${d}.`;
-  if (name.startsWith("Volume")) return `Volume is thin — trading activity is not unusual enough to confirm the move${d}.`;
-  if (name.startsWith("Funding")) return `Funding is crowded — perpetual traders are already heavily positioned on one side, which raises squeeze risk${d}.`;
-  if (name.startsWith("RSI")) return `RSI is at an extreme — short-term momentum is stretched, so entering here often means chasing${d}.`;
-  if (name.startsWith("Move")) return `The move is small — price has not moved enough relative to its normal daily range to mean anything yet${d}.`;
-  if (name.startsWith("Taker") || name.startsWith("Flow")) return `Flow disagrees — aggressive buyers and sellers are not pushing in the direction of the trend${d}.`;
-  if (name.startsWith("Shape")) return `The price pattern argues against it — the recent shape is one that usually exhausts rather than continues${d}.`;
+  if (name.startsWith("Trend") || name.startsWith("Larger trend")) return `No clear direction — price is not consistently on one side of its key moving averages, so there is nothing to join${d}.`;
+  if (name.startsWith("Volume")) return `Activity is ordinary — the move has not drawn enough participation to confirm it${d}.`;
+  if (name.startsWith("Funding")) return `Funding is crowded — one side is already paying to hold, which raises squeeze risk${d}.`;
+  if (name.startsWith("RSI")) return `Momentum is stretched — price has moved unusually one-sidedly, so entering here often means chasing${d}.`;
+  if (name.startsWith("Move")) return `The move is small — within what this coin does on an ordinary day, so it may mean nothing yet${d}.`;
+  if (name.startsWith("Taker") || name.startsWith("Flow") || name.startsWith("Aggressors")) return `The urgent side disagrees — the people crossing the spread are on the other side of the trend${d}.`;
+  if (name.startsWith("Shape") || name.startsWith("Not an exhaustion") || name.startsWith("Exhaustion")) return `The recent shape argues against it — this geometry has more often exhausted than continued${d}.`;
+  if (name.startsWith("Pulled back")) return `No pullback yet — price has not come back to its 20-bar mean, so the entry would be a chase${d}.`;
+  if (name.startsWith("Own move")) return `Not moving on its own — most of the move is the market, not this coin${d}.`;
   return `${name}${d}`;
 }
 
-/** Friendlier one-liners for the shape labels. */
+/** Friendlier one-liners for the shape labels. Observation, not prediction. */
 export const SHAPE_PLAIN: Record<string, string> = {
-  blowoff_up: "An unusually vertical rise on extreme volume and momentum. Often the crowd is all in and the move exhausts, but it can run further than expected.",
-  capitulation: "An unusually vertical drop on extreme volume with momentum pinned low. Forced selling; often followed by a bounce, sometimes by more selling.",
-  flag_up: "A big rise, then a tight, quiet range. Textbooks expect continuation higher; check this coin's own base rate before believing it.",
+  blowoff_up: "Price has accelerated unusually fast on elevated activity. Moves like this can indicate exhaustion, but strong momentum can persist longer than expected.",
+  capitulation: "An unusually vertical drop on extreme volume with momentum pinned low. Forced selling; sometimes followed by a bounce, sometimes by more selling.",
+  flag_up: "A big rise, then a tight, quiet range. Textbooks expect continuation higher; this coin's own base rate is shown below.",
   flag_down: "A big drop, then a tight, quiet range. Textbooks expect continuation lower.",
   dead_cat: "A hard fall followed by a partial bounce. Could be a real recovery or a pause before more selling; volume on the bounce decides.",
   v_reversal: "A hard fall that was mostly bought back quickly. Sellers were absorbed fast.",
