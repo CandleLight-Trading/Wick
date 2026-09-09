@@ -139,7 +139,7 @@ def market(request: Request, quote: str = "USDT"):
         is_tracked = t.symbol in c.ingest.tracked
         spark = [x.close for x in c.store.latest(t.symbol, "1h", 25)] if is_tracked else None
         others = {name: tk[t.symbol].to_wire() for name, tk in c.store.other_tickers.items() if t.symbol in tk}
-        rows.append({**t.to_wire(), "tracked": is_tracked, "sparkline": spark, "others": others})
+        rows.append({**t.to_wire(), "tracked": is_tracked, "sparkline": spark, "others": others, **c.store.momentum(t.symbol)})
     return {"quote": quote, "rows": rows, "exchanges": sorted(c.store.other_tickers)}
 
 
@@ -290,6 +290,9 @@ async def analysis_scan(request: Request, symbol: str | None = None):
         symbol = symbol.upper()
         if symbol not in c.ingest.tracked and c.desk.track_fn:
             await c.desk.track_fn(symbol)
+        # A coin with no candles yet would scan as nothing and sit blank until the next
+        # 15-minute scan. Its shallow sync takes a few seconds; wait for it (bounded).
+        await c.ingest.wait_synced(symbol, timeout=45)
     await c.analysis.scan()
     return {"ok": True, "lastScan": ms_to_s(c.analysis.last_scan_ms)}
 

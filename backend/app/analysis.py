@@ -48,6 +48,7 @@ class AnalysisService:
         self.rules: dict[str, dict] = {}      # symbol -> latest rules verdict
         self.features: dict[str, Features] = {}
         self.shapes: dict[str, dict] = {}     # symbol -> shape_report, refreshed each scan
+        self._shape_key: dict[str, int] = {}       # symbol -> last closed 1h open_time the shape was computed for
         self.slippage: dict[str, dict] = {}   # symbol -> slippage table (top movers only)
         self.breadth: dict = {}
         self.last_scan_ms = 0
@@ -98,14 +99,23 @@ class AnalysisService:
                                        "underpowered": h24["underpowered"]}}
 
     async def _refresh_shape(self, symbol: str):
+        # Reading 17,500 bars and labelling them costs about 0.6 s per coin, which made a
+        # scan of 36 coins take 25 s. The shape only changes when a 1h candle closes, so
+        # recompute only then; a rescan between closes (adding a coin, say) is near instant.
+        key = self.store.last_closed_open_time(symbol, "1h")
+        if key is not None and self._shape_key.get(symbol) == key:
+            return
         h1 = await self.store.closed_history(symbol, "1h")
-        # Pure Python over ~17,500 bars takes a few hundred ms; keep it off the event loop.
-        report = await asyncio.to_thread(shape_report, h1)
+        report = await asyncio.to_thread(shape_report, h1)   # pure Python; keep it off the event loop
         if report:
             self.shapes[symbol] = report
+            self._shape_key[symbol] = key
 
     async def _refresh_depth(self, symbol: str):
         if self.adapter is None:
+            return
+        cur = self.store.depth_scan.get(symbol)
+        if cur and now_ms() - cur.ts < 5 * 60_000:      # weight 50 a call; five minutes is fresh enough for slippage
             return
         try:
             depth = await self.adapter.fetch_depth(symbol, config.DEPTH_LIMIT)

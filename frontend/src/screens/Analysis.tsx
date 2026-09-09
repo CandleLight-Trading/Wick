@@ -193,6 +193,7 @@ function MoverCard({ m, budget, account, a, focused }: { m: Mover; budget: numbe
         <button onClick={() => navigate("charts", { symbol: m.symbol })} className="text-[17px] font-semibold hover:underline">{m.symbol}</button>
         <span className="num text-zinc-300">{fmtPrice(f.price)}</span>
         <span className={`num text-sm ${(f.change24hPct ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtPct(f.change24hPct)} 24h</span>
+        {s && <span className="text-sm text-zinc-500" title={`Added to Analysis ${fmtTime(s.detectedAt)}`}>Added {ago(Date.now() / 1000 - s.detectedAt)}</span>}
         {s && <Term k="quality" value={s.quality}><span className={`text-xs uppercase tracking-wide px-1.5 py-1 rounded border cursor-help ${QUALITY[s.quality]}`}>{s.quality} setup</span></Term>}
         <span className={`text-[15px] font-semibold tracking-wide ${rs === "stale" ? "text-amber-300" : "text-zinc-100"}`}>{headline}</span>
         {held.length > 0 && (
@@ -339,7 +340,8 @@ export default function Analysis({ params }: { params: URLSearchParams }) {
 
   if (!data) return <div className="p-3 text-[15px] text-zinc-500">{error ?? "Loading…"}</div>;
   const llm = data.llm;
-  const ordered = [...data.movers].sort((x, y) => (x.symbol === focus ? -1 : y.symbol === focus ? 1 : 0));
+  // Focused coin first, then newest setups first so what you just added is at the top.
+  const ordered = [...data.movers].sort((x, y) => (x.symbol === focus ? -1 : y.symbol === focus ? 1 : (y.setup?.detectedAt ?? 0) - (x.setup?.detectedAt ?? 0)));
   const needs = ordered.filter((m) => m.setup && m.setup.state !== "researched" && (m.setup.quality !== "weak" || m.setup.pinned));
   const researched = ordered.filter((m) => m.setup && m.setup.state === "researched" && m.setup.researchState !== "none");
   const watching = ordered.filter((m) => !needs.includes(m) && !researched.includes(m));

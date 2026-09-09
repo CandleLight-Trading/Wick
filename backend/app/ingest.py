@@ -65,6 +65,7 @@ class IngestService:
         # history is continuous up to now, after which scanning and trade actions begin.
         self.history_ready = asyncio.Event()
         self.sync_progress = {"done": 0, "total": 0}
+        self._synced: dict[str, asyncio.Event] = {}     # per newly tracked symbol: shallow sync landed
         if LOG_WS_FRAMES:
             logging.getLogger("websockets.client").setLevel(logging.DEBUG)
 
@@ -214,13 +215,27 @@ class IngestService:
         snapshot = self._snapshot_last_closed(added)      # before subscribing, so no frame precedes it
         await self._resubscribe()
         for sym in sorted(added):
+            self._synced[sym] = asyncio.Event()
             asyncio.create_task(self._sync_new(sym, snapshot))
+
+    async def wait_synced(self, sym: str, timeout: float):
+        """Wait until a newly tracked symbol's ring-depth candles are stored (the deep 1h/1d
+        history keeps loading in the background). Returns at once for long-tracked symbols."""
+        ev = self._synced.get(sym)
+        if ev is None:
+            return
+        try:
+            await asyncio.wait_for(ev.wait(), timeout)
+        except asyncio.TimeoutError:
+            log.warning("%s shallow sync not done after %.0fs; scanning anyway", sym, timeout)
 
     async def _sync_new(self, sym: str, snapshot: dict[tuple[str, str], int | None]):
         if self.backfiller is None:
             return
         try:
             await self._sync_symbol(sym, snapshot)
+            if sym in self._synced:
+                self._synced[sym].set()
             await self._deep_symbol(sym)
             for iv in self.intervals:
                 await self.backfiller.repair_holes(sym, iv)

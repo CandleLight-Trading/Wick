@@ -27,6 +27,8 @@ export interface WireTicker {
 export interface MarketRow extends WireTicker {
   tracked: boolean;
   sparkline: number[] | null;
+  vel1h: number | null;     // % change over the last hour
+  accel1h: number | null;   // vel1h minus the hour before, in percentage points
   others: Record<string, WireTicker>; // other exchanges' tickers for the same symbol
 }
 

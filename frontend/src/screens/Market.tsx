@@ -7,7 +7,7 @@ import { useServerMessages, wsClient } from "../ws";
 import { navigate } from "../App";
 import TradeTicket from "../components/TradeTicket";
 
-type SortKey = "symbol" | "last" | "changePct" | "quoteVolume" | "high" | "low";
+type SortKey = "symbol" | "last" | "changePct" | "quoteVolume" | "high" | "low" | "vel1h" | "accel1h";
 
 export default function Market() {
   const [rows, setRows] = useState<MarketRow[]>([]);
@@ -58,13 +58,14 @@ export default function Market() {
     return rows
       .filter((r) => r.quoteVolume >= minVol && (!needle || r.symbol.includes(needle)))
       .sort((a, b) => {
-        const av = a[sort.key], bv = b[sort.key];
+        const av = a[sort.key] ?? -Infinity, bv = b[sort.key] ?? -Infinity;   // unknown momentum sorts last
         return (av < bv ? -1 : av > bv ? 1 : 0) * sort.dir;
       });
   }, [rows, minVol, filter, sort]);
 
-  const header = (key: SortKey, label: string, right = true) => (
+  const header = (key: SortKey, label: string, right = true, title?: string) => (
     <th
+      title={title}
       onClick={() => setSort((s) => ({ key, dir: s.key === key ? (s.dir === 1 ? -1 : 1) : -1 }))}
       className={`px-2 py-1.5 font-normal cursor-pointer select-none hover:text-zinc-200 ${right ? "text-right" : "text-left"}`}
     >
@@ -82,7 +83,7 @@ export default function Market() {
           <span className="num w-16">{fmtCompact(minVol)} USDT</span>
         </label>
         <span className="text-zinc-500">{visible.length} of {rows.length} USDT pairs</span>
-        <span className="ml-auto text-zinc-500">24h figures are a rolling window ending now, not the UTC-day candle. Click a row to chart it.</span>
+        <span className="ml-auto text-zinc-500">24h figures are a rolling window ending now, not the UTC-day candle. 1h % and Accel need an hour or two of samples after a restart. Click a row to chart it.</span>
       </div>
       <div className="flex-1 min-h-0 overflow-auto rounded border border-zinc-800">
         <table className="w-full text-sm num">
@@ -94,6 +95,8 @@ export default function Market() {
               {header("quoteVolume", "24h Volume (USDT)")}
               {header("high", "24h High")}
               {header("low", "24h Low")}
+              {header("vel1h", "1h %", true, "How fast price is moving right now: change over the last hour.")}
+              {header("accel1h", "Accel", true, "Is it speeding up? This hour's change minus the previous hour's, in percentage points. Positive means momentum is building, negative means it is fading.")}
               <th className="px-2 py-1.5 font-normal text-right" title="Kraken last price minus Binance last price, in basis points. Tracked pairs listed on Kraken only.">Kraken Δ</th>
               <th className="px-2 py-1.5 font-normal text-left" title="Last 24 hourly closes. Only coins Wick tracks have local candles.">24h Trend</th>
               <th className="px-2 py-1.5 font-normal text-right"></th>
@@ -111,6 +114,8 @@ export default function Market() {
                 <td className="px-2 py-1 text-right">{fmtCompact(r.quoteVolume)}</td>
                 <td className="px-2 py-1 text-right text-zinc-400">{fmtPrice(r.high)}</td>
                 <td className="px-2 py-1 text-right text-zinc-400">{fmtPrice(r.low)}</td>
+                <td className={`px-2 py-1 text-right ${r.vel1h == null ? "text-zinc-600" : r.vel1h >= 0 ? "text-emerald-400" : "text-red-400"}`}>{fmtPct(r.vel1h)}</td>
+                <td className={`px-2 py-1 text-right ${r.accel1h == null ? "text-zinc-600" : r.accel1h >= 0 ? "text-emerald-400" : "text-red-400"}`}>{r.accel1h == null ? "–" : `${r.accel1h >= 0 ? "+" : ""}${r.accel1h.toFixed(2)}`}</td>
                 <td className="px-2 py-1 text-right text-zinc-400">{divergenceBps(r) == null ? "–" : `${divergenceBps(r)! >= 0 ? "+" : ""}${divergenceBps(r)!.toFixed(1)}`}</td>
                 <td className="px-2 py-1"><Sparkline values={r.sparkline} /></td>
                 <td className="px-2 py-1 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>

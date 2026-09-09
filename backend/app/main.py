@@ -72,6 +72,8 @@ async def ticker_poll(c: AppContext):
                 cur = c.store.tickers.get(t.symbol)
                 if cur is None or cur.event_time <= t.event_time:   # never overwrite a fresher WS ticker
                     c.store.tickers[t.symbol] = t
+                if t.symbol.endswith("USDT") and t.last:
+                    c.store.sample_price(t.symbol, t.event_time, t.last)
         except BannedError:
             return
         except Exception:

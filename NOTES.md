@@ -501,6 +501,20 @@ Measured on the laptop during the boot sync: about 200 MB RSS, well inside Hobby
 Deferred: a backup script (SQLite backup API, rolling seven, optional bucket) once the
 deployment has run a week; a Logout button (the API exists).
 
+## Phase 6b: speed and momentum
+
+- **Scan was 25 s because of shapes.** Every scan re-read 17,500 hourly bars per coin and
+  re-labelled them (about 0.6 s each, 36 coins). A shape only changes when an hourly candle
+  closes, so the report is now cached per last closed 1h open time. Warm rescans take
+  about a second; adding a coin from Market takes about four (its shallow backfill, then
+  one scan), where before it waited for the next 15-minute scan or contended with the
+  boot sync for the REST lock. Depth for top movers is refreshed at most every five minutes.
+- **Analysis lists newest first** and every card says when it was added.
+- **Market momentum columns.** 1h % is the first derivative (change over the last hour);
+  Accel is the second (this hour's change minus the previous hour's). Tracked coins use
+  closed 1m candles; every other USDT pair uses minute-spaced samples from the ticker poll,
+  memory only, so those columns take an hour or two to fill after a restart.
+
 ## UI conventions (enforced from phase 5c on)
 
 - Navigation, buttons and section headings: Title Case (`Export Ledger`, `Open Positions`).

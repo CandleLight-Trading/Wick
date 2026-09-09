@@ -128,6 +128,9 @@ class Store:
         self.funding_history: dict[str, list[FundingPoint]] = {}
         self.futures_status: dict = {"source": None, "error": None}
         self.dvol: dict[str, float] = {}             # Deribit implied vol index, BTC/ETH, percent
+        # Minute-spaced last-price samples from the ticker poll, for the Market momentum columns
+        # on coins without local candles. ~2 hours deep. ponytail: memory only, warms up after a restart.
+        self.price_samples: dict[str, deque[tuple[int, float]]] = {}
         self.depth_scan: dict[str, Depth] = {}       # depth fetched by the scanner for top movers
 
     async def open(self):
@@ -211,6 +214,33 @@ class Store:
         ring = self.ring(symbol, interval)
         ring.clear()
         ring.extend(_candle(symbol, interval, r) for r in reversed(rows))
+
+    def sample_price(self, symbol: str, t: int, price: float):
+        d = self.price_samples.setdefault(symbol, deque(maxlen=130))
+        if not d or t - d[-1][0] >= 55_000:
+            d.append((t, price))
+
+    def momentum(self, symbol: str) -> dict:
+        """First and second derivative of price over one-hour steps, in percent:
+        vel1h   = change over the last hour (how fast it is moving now)
+        accel1h = that change minus the same change one hour earlier (is it speeding up)
+        Tracked coins use closed 1m candles; anything else the poll samples. None until warm."""
+        closes = [c.close for c in self.ring(symbol, "1m") if c.closed]
+        if len(closes) >= 121:
+            now, h1, h2 = closes[-1], closes[-61], closes[-121]
+        else:
+            d = self.price_samples.get(symbol)
+            if not d:
+                return {"vel1h": None, "accel1h": None}
+            t_now, now = d[-1]
+            h1 = next((p for t, p in reversed(d) if t <= t_now - 3_600_000), None)
+            h2 = next((p for t, p in reversed(d) if t <= t_now - 7_200_000), None)
+            if h1 is None:
+                return {"vel1h": None, "accel1h": None}
+            vel = (now / h1 - 1) * 100
+            return {"vel1h": vel, "accel1h": None if h2 is None else vel - (h1 / h2 - 1) * 100}
+        vel = (now / h1 - 1) * 100
+        return {"vel1h": vel, "accel1h": vel - (h1 / h2 - 1) * 100}
 
     def latest(self, symbol: str, interval: str, limit: int) -> list[Candle]:
         ring = self.ring(symbol, interval)
