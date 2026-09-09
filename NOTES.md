@@ -570,6 +570,19 @@ ChatGPT's review turned that into four builds; all four are here.
   now written in the ⓘ tooltip: a coin enters when it matches a playbook or ranks in the
   top movers, and leaves when that stops, or when it is dismissed or researched.
 
+## Phase 8: tooltips teach by intuition
+
+Jason's observation: ATR is intuitive ("this coin normally thrashes around this much")
+and the maths is just a ruler on the intuition. So every tooltip is now built the way a
+concept is learned: plain title ("Typical movement"), the formal term underneath ("ATR ·
+Average True Range"), then what the number on screen means here ("AVAX has recently
+moved about 4.5% per day under normal conditions; a 14% move would be unusually large"),
+then the intuition and why it matters to the decision, then the definition last.
+Templates are deterministic and value-aware; no model call is ever made for a tooltip.
+Observation stays separate from prediction: nothing says what price "will" do.
+Some labels carry both words: "Planned loss · 1R", "Reward / risk · R:R",
+"Buyer urgency" for taker share. The vocabulary is still taught; it just lands second.
+
 ## UI conventions (enforced from phase 5c on)
 
 - Navigation, buttons and section headings: Title Case (`Export Ledger`, `Open Positions`).
