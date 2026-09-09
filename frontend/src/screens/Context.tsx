@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api";
+import { api, peek } from "../api";
 import BaseRateStrip from "../components/BaseRateStrip";
 import { fmtCompact, fmtNum, fmtPct, fmtPrice, fmtTime, useClickOutside, useLocalStorage } from "../store";
 import type { ConditionEvent, ContextData, FuturesData, SymbolInfo, WireDepth } from "../types";
@@ -117,8 +117,8 @@ function FuturesBlock({ f, spot }: { f: FuturesData; spot: number }) {
 export default function Context({ params }: { params: URLSearchParams }) {
   const [saved, setSaved] = useLocalStorage("contextSymbol", "BTCUSDT");
   const symbol = params.get("symbol") ?? saved;
-  const [tracked, setTracked] = useState<string[]>([]);
-  const [data, setData] = useState<ContextData | null>(null);
+  const [tracked, setTracked] = useState<string[]>(() => peek<string[]>("/api/tracked") ?? []);
+  const [data, setData] = useState<ContextData | null>(() => peek<ContextData>(`/api/context?symbol=${symbol}`) ?? null);
   const [events, setEvents] = useState<ConditionEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [book, setBook] = useState<WireDepth | null>(null);
@@ -129,7 +129,7 @@ export default function Context({ params }: { params: URLSearchParams }) {
   useEffect(() => {
     let cancelled = false;
     setBook(null);
-    setData(null); setError(null); setEvents([]);            // never show the previous coin's numbers under a new symbol
+    setData(peek<ContextData>(`/api/context?symbol=${symbol}`) ?? null); setError(null); setEvents([]);   // never show the previous coin's numbers under a new symbol
     const load = () => {
       api.context(symbol).then((d) => { if (!cancelled) { setData(d); setError(null); } })
         .catch((e) => {

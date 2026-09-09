@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api } from "../api";
+import { api, peek } from "../api";
 import Sparkline from "../components/Sparkline";
 import { fmtCompact, fmtPct, fmtPrice, useLocalStorage } from "../store";
 import type { MarketRow } from "../types";
@@ -10,7 +10,7 @@ import TradeTicket from "../components/TradeTicket";
 type SortKey = "symbol" | "last" | "changePct" | "quoteVolume" | "high" | "low" | "vel1h" | "accel1h";
 
 export default function Market() {
-  const [rows, setRows] = useState<MarketRow[]>([]);
+  const [rows, setRows] = useState<MarketRow[]>(() => peek<{ rows: MarketRow[] }>("/api/market")?.rows ?? []);
   const [minVol, setMinVol] = useLocalStorage("minVol", 10_000_000);
   const [filter, setFilter] = useState("");
   const [sort, setSort] = useLocalStorage<{ key: SortKey; dir: 1 | -1 }>("marketSort", { key: "quoteVolume", dir: -1 });

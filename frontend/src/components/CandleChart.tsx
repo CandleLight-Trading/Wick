@@ -1,6 +1,6 @@
 import { CandlestickSeries, createChart, HistogramSeries, type IChartApi, type ISeriesApi, type UTCTimestamp } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, peek } from "../api";
 import { fmtPrice } from "../store";
 import type { Interval, WireCandle } from "../types";
 import { useServerMessages, wsClient } from "../ws";
@@ -52,8 +52,7 @@ export default function CandleChart({ symbol, interval }: { symbol: string; inte
   // Load history and subscribe whenever symbol/interval changes (or a backfill lands).
   useEffect(() => {
     let cancelled = false;
-    setLoaded(false);
-    api.candles(symbol, interval, 500).then((res) => {
+    const apply = (res: { candles: WireCandle[] }) => {
       if (cancelled || !candles.current || !volume.current) return;
       candles.current.setData(res.candles.map(candleBar));
       volume.current.setData(res.candles.map(volumeBar));
@@ -61,7 +60,11 @@ export default function CandleChart({ symbol, interval }: { symbol: string; inte
       chart.current?.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 150), to: n + 5 });
       setLast(res.candles[n - 1] ?? null);
       setLoaded(true);
-    }).catch(() => setLoaded(true));
+    };
+    // Draw what we already have for this symbol at once; the fresh fetch replaces it a moment later.
+    const cached = peek<{ candles: WireCandle[] }>(`/api/candles?symbol=${symbol}&interval=${interval}&limit=500`);
+    if (cached) apply(cached); else setLoaded(false);
+    api.candles(symbol, interval, 500).then(apply).catch(() => setLoaded(true));
     const release = wsClient.want(`kline:${symbol}:${interval}`);
     return () => { cancelled = true; release(); };
   }, [symbol, interval, reloadKey]);

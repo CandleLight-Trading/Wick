@@ -15,6 +15,21 @@ CAVEATS = (
 )
 
 BTC = "BTCUSDT"
+# RSI, the condition flags and the base rates each walk all 17,500 hourly bars in pure
+# Python, most of the panel's half second. They only change when an hourly candle closes,
+# so they are cached on (symbol, last bar). Everything live (price, book, flow) is not.
+_hist_cache: dict[tuple, dict] = {}
+
+
+def history_block(symbol: str, h1) -> dict:
+    key = (symbol, h1[-1].open_time, len(h1))
+    hb = _hist_cache.get(key)
+    if hb is None:
+        if len(_hist_cache) > 200:
+            _hist_cache.clear()
+        conds = evaluate_conditions(h1)
+        hb = _hist_cache[key] = {"rsi": rsi([c.close for c in h1]), "conds": conds, "baseRates": base_rates(h1, conds)}
+    return hb
 
 
 async def build_context(store: Store, symbol: str, tracked_count: int) -> dict:
@@ -52,7 +67,8 @@ async def build_context(store: Store, symbol: str, tracked_count: int) -> dict:
         ma = sma(closes, n)[-1] if len(closes) >= n else None
         mas[str(n)] = {"value": ma, "distancePct": pct_distance(price, ma)}
 
-    r = rsi(closes)
+    hb = history_block(symbol, h1)
+    r = hb["rsi"]
     r_hist = [v for v in r if v is not None]
     rsi_block = {"value": r[-1], "histogram": histogram(r_hist, r[-1])}
 
@@ -73,7 +89,7 @@ async def build_context(store: Store, symbol: str, tracked_count: int) -> dict:
     elif symbol == BTC:
         corr = 1.0
 
-    conds = evaluate_conditions(h1)
+    conds = hb["conds"]
 
     # Phase 4: order flow, implied vol, slippage at your sizes.
     flow = {"takerBuyRatio24": taker_ratio(h1, 24), "takerBuyRatio7d": taker_ratio(h1, 168),
@@ -116,7 +132,7 @@ async def build_context(store: Store, symbol: str, tracked_count: int) -> dict:
         "volume": volume, "volatility": volatility, "ma": mas, "rsi": rsi_block, "book": book,
         "correlationBtc30d": corr,
         "conditionsTrue": [n for n, f in conds.items() if f and f[-1]],
-        "baseRates": base_rates(h1, conds),
+        "baseRates": hb["baseRates"],
         "testsEvaluated": {"total": tracked_count * len(CONDITION_NAMES) * len(HORIZONS_BARS),
                            "symbols": tracked_count, "conditions": len(CONDITION_NAMES), "horizons": len(HORIZONS_BARS)},
         "minSample": MIN_SAMPLE, "roundTripCost": ROUND_TRIP_COST, "caveats": CAVEATS,

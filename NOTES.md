@@ -515,6 +515,25 @@ deployment has run a week; a Logout button (the API exists).
   closed 1m candles; every other USDT pair uses minute-spaced samples from the ticker poll,
   memory only, so those columns take an hour or two to fill after a restart.
 
+## Phase 6c: snappiness
+
+- **Commits were the bottleneck.** The live path committed SQLite on every candle frame:
+  with 200+ streams that is over a hundred commits a second through aiosqlite's single
+  worker thread, and every read (Context's 17,500-row history) queued behind them. Live
+  rows are now written immediately and committed once a second by `flush_loop`. A crash
+  loses at most a second of forming candles, which the reconnect backfill replaces anyway.
+- **Context caches its per-bar work.** RSI, condition flags and base rates walk the whole
+  hourly series in pure Python; they are cached on (symbol, last closed bar). Live parts
+  (price, book, flow) are not cached. Idle latency went from ~0.5 s to ~0.25 s.
+- **The frontend remembers the last response per URL** (`peek` in api.ts). Every screen
+  and chart renders the cached payload the instant it mounts and refreshes behind it, so
+  tab switches and symbol swaps never show "Loading…" for data seen moments ago.
+- **Known ceiling.** When an hourly candle closes, every coin's shape recomputes in the
+  next scan (about 0.6 s each in a thread, but the GIL makes the API sluggish for those
+  ~20 s). Upgrade path if it ever matters: a process pool for `shape_report`.
+- Creating an account is a proper dialog ("Fund a new desk") and the balance rolls up from
+  zero on first display. Pure flair, requested.
+
 ## UI conventions (enforced from phase 5c on)
 
 - Navigation, buttons and section headings: Title Case (`Export Ledger`, `Open Positions`).

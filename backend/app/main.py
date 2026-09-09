@@ -212,6 +212,14 @@ async def lifespan(app: FastAPI):
             except Exception:
                 log.exception("desk monitor failed")
 
+    async def flush_loop():
+        while True:
+            await asyncio.sleep(1)
+            try:
+                await store.flush()
+            except Exception:
+                log.exception("commit failed")
+
     async def retention_loop():
         await ingest.history_ready.wait()
         while True:
@@ -225,7 +233,7 @@ async def lifespan(app: FastAPI):
     tasks = [asyncio.create_task(coro) for coro in
              (ingest.run(), backfiller.worker(), ticker_poll(c), depth_poll(c), status_loop(c), futures.run(),
               analysis.run_loop(ready=ingest.history_ready), dvol_poll(store, config.DERIBIT_BASE, config.DVOL_POLL_S),
-              monitor_loop(), retention_loop())]
+              monitor_loop(), retention_loop(), flush_loop())]
     if kraken:
         k_ingest, k_listed = kraken
         c.secondary[k_ingest.adapter.name] = k_ingest
@@ -243,6 +251,7 @@ async def lifespan(app: FastAPI):
         await judge.close()
         await alerts.close()
         await rest.close()
+        await store.flush()
         await store.close()
 
 

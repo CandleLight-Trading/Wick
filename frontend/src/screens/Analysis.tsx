@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "../api";
+import { api, peek } from "../api";
 import { fmtCompact, fmtNum, fmtPct, fmtPrice, fmtTime, useClickOutside, useLocalStorage } from "../store";
 import type { AnalysisPayload, Mover, PaperPayload, ShapeReport, SlippageTable } from "../types";
 import { navigate } from "../App";
@@ -309,8 +309,8 @@ const HOW_WICK_UPDATES = "Market scan: every 15 min, no AI cost. Trade monitorin
 
 export default function Analysis({ params }: { params: URLSearchParams }) {
   const focus = params.get("symbol");
-  const [data, setData] = useState<AnalysisPayload | null>(null);
-  const [paper, setPaper] = useState<PaperPayload | null>(null);
+  const [data, setData] = useState<AnalysisPayload | null>(() => peek<AnalysisPayload>("/api/analysis") ?? null);
+  const [paper, setPaper] = useState<PaperPayload | null>(() => peek<PaperPayload>("/api/paper") ?? null);
   const [running, setRunning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [researching, setResearching] = useState<number | null>(null);

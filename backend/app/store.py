@@ -118,6 +118,7 @@ class Store:
         self.ring_size = ring_size
         self._rings: dict[tuple[str, str], deque[Candle]] = {}
         self._db: aiosqlite.Connection | None = None
+        self._dirty = False                       # live candle rows written but not yet committed
         # Latest non-candle state, memory only. Tickers are cheap to refetch; depth is ephemeral.
         self.tickers: dict[str, Ticker] = {}                      # primary exchange (Binance)
         self.other_tickers: dict[str, dict[str, Ticker]] = {}      # exchange -> symbol -> ticker
@@ -178,6 +179,7 @@ class Store:
 
     async def close(self):
         if self._db:
+            await self.flush()
             await self._db.close()
 
     # ---- candles ------------------------------------------------------------
@@ -185,16 +187,25 @@ class Store:
         return self._rings.setdefault((symbol, interval), deque(maxlen=self.ring_size))
 
     async def upsert(self, c: Candle):
-        """Live path: one candle, write-through."""
+        """Live path: one candle, write-through. The row is written now and committed by
+        flush(): with 200+ streams a commit per frame was over a hundred fsyncs a second, and
+        every read queued behind them. A crash loses at most a second of forming candles,
+        which the next backfill replaces anyway."""
         ring = self.ring(c.symbol, c.interval)
         await self._db.execute(UPSERT, _row(c))
-        await self._db.commit()
+        self._dirty = True
         if ring and ring[-1].open_time == c.open_time:
             ring[-1] = c                                   # in-place update of the forming candle
         elif not ring or c.open_time > ring[-1].open_time:
             ring.append(c)                                 # new candle
         else:
             await self.reload_ring(c.symbol, c.interval)   # older than tail: rebuild from truth
+
+    async def flush(self):
+        """Commit whatever the live path wrote. Run every second from main."""
+        if self._dirty:
+            self._dirty = False
+            await self._db.commit()
 
     async def upsert_many(self, candles: list[Candle]):
         """Backfill path: bulk write, then rebuild affected rings from SQLite."""

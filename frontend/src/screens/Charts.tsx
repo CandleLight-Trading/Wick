@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "../api";
+import { api, peek } from "../api";
 import CandleChart from "../components/CandleChart";
 import IntervalToggle from "../components/IntervalToggle";
 import SymbolPicker from "../components/SymbolPicker";
@@ -13,8 +13,8 @@ const DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"];
 export default function Charts({ params }: { params: URLSearchParams }) {
   const [ticket, setTicket] = useState<string | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
-  const [all, setAll] = useState<SymbolInfo[]>([]);
-  const [tracked, setTracked] = useState<string[] | null>(null);
+  const [all, setAll] = useState<SymbolInfo[]>(() => peek<SymbolInfo[]>("/api/symbols") ?? []);
+  const [tracked, setTracked] = useState<string[] | null>(() => peek<string[]>("/api/tracked") ?? null);
   const [selected, setSelected] = useLocalStorage<string[]>("symbols", DEFAULT_SYMBOLS);
   const [interval, setInterval] = useLocalStorage<Interval>("interval", "1m");
   const [layout, setLayout] = useLocalStorage<1 | 4>("layout", 4);

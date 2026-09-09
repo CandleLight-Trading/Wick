@@ -3,11 +3,19 @@ import type { Account, AnalysisPayload, ClosePreview, ConditionEvent, ContextDat
 /** A 401 anywhere means the session is gone: the app shows the login screen. */
 export const UNAUTHORIZED = "wick:unauthorized";
 
+/** Last response per URL, kept for the life of the page. Screens render it at once when
+ * they mount and refresh from the network behind it, so switching tabs never shows "Loading…"
+ * for data that was on screen a moment ago. */
+const cache = new Map<string, unknown>();
+export const peek = <T,>(url: string): T | undefined => cache.get(url) as T | undefined;
+
 async function get<T>(url: string): Promise<T> {
   const r = await fetch(url);
   if (r.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED));
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
-  return r.json();
+  const data = (await r.json()) as T;
+  cache.set(url, data);
+  return data;
 }
 
 export const api = {

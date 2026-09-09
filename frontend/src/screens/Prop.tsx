@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api";
+import { api, peek } from "../api";
 import TradeTicket from "../components/TradeTicket";
 import { fmtCompact, fmtNum, fmtPct, fmtPrice, fmtTime, useClickOutside, useLocalStorage } from "../store";
 import type { Account, ClosePreview, MarketRow, PositionResearch, PropPayload, SymbolInfo, Trade } from "../types";
@@ -73,12 +73,75 @@ function EquityChart({ pts, start }: { pts: { time: number; equity: number }[]; 
   );
 }
 
+const money = (v: number) => "$" + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/** The balance. When a new account has just been funded it rolls up from zero. */
+function CountUp({ value, animate, onDone }: { value: number; animate: boolean; onDone: () => void }) {
+  const [shown, setShown] = useState(animate ? 0 : value);
+  useEffect(() => {
+    if (!animate) { setShown(value); return; }
+    const t0 = performance.now(), ms = 1800;
+    let raf = 0;
+    const tick = (t: number) => {
+      const p = Math.min(1, (t - t0) / ms);
+      setShown(value * (1 - Math.pow(1 - p, 3)));          // ease-out: fast start, settles gently
+      if (p < 1) raf = requestAnimationFrame(tick); else onDone();
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [animate, value]); // eslint-disable-line react-hooks/exhaustive-deps
+  return <span className={animate ? "text-emerald-300 transition-colors" : undefined}>{money(shown)}</span>;
+}
+
+type AccountForm = { name: string; size: number; daily_loss_pct: number; max_dd_pct: number; target_pct: number };
+
+/** Opening an account is an occasion, so it gets a proper dialog rather than an inline strip. */
+function NewAccountModal({ form, setForm, onCreate, onClose }: { form: AccountForm; setForm: (f: AccountForm) => void; onCreate: () => Promise<void>; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const field = (k: keyof AccountForm, label: string, hint: string, type: "text" | "number", prefix?: string, suffix?: string) => (
+    <label className="flex flex-col gap-1">
+      <span className="text-sm text-zinc-300">{label}</span>
+      <span className="flex items-center bg-zinc-950 border border-zinc-700 rounded-md px-3 focus-within:border-zinc-400">
+        {prefix && <span className="text-zinc-500 mr-1">{prefix}</span>}
+        <input type={type} value={String(form[k])} onChange={(e) => setForm({ ...form, [k]: k === "name" ? e.target.value : Number(e.target.value) })} className="bg-transparent py-2 w-full outline-none num text-[17px]" />
+        {suffix && <span className="text-zinc-500 ml-1">{suffix}</span>}
+      </span>
+      <span className="text-xs text-zinc-500">{hint}</span>
+    </label>
+  );
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full max-w-lg rounded-2xl border border-zinc-700 bg-gradient-to-b from-zinc-900 to-zinc-950 shadow-2xl p-7 flex flex-col gap-5">
+        <div>
+          <div className="text-xs uppercase tracking-[0.2em] text-emerald-400">New Account</div>
+          <h2 className="text-3xl font-semibold tracking-tight mt-1">Fund a new desk</h2>
+          <p className="text-sm text-zinc-400 mt-1">Set the size and the rules you will trade under. Wick enforces the rules; you make the calls.</p>
+        </div>
+        {field("name", "Name", "How it shows in the account picker.", "text")}
+        {field("size", "Starting balance", "The equity you begin with. Position sizes and limits scale from it.", "number", "$")}
+        <div className="grid grid-cols-3 gap-3">
+          {field("daily_loss_pct", "Daily loss limit", "Lose this much in a day and trading stops until tomorrow.", "number", undefined, "%")}
+          {field("max_dd_pct", "Max drawdown", "Fall this far below the peak and the account fails.", "number", undefined, "%")}
+          {field("target_pct", "Profit target", "Reach this gain and the challenge is passed.", "number", undefined, "%")}
+        </div>
+        <div className="flex items-center justify-end gap-3 pt-1">
+          <button onClick={onClose} className="px-4 py-2 rounded-md border border-zinc-700 text-zinc-400 hover:text-zinc-200">Cancel</button>
+          <button disabled={busy || !form.name.trim() || form.size <= 0} onClick={async () => { setBusy(true); await onCreate(); setBusy(false); }} className="px-6 py-2.5 rounded-md bg-emerald-400 text-zinc-950 font-semibold text-[16px] hover:bg-emerald-300 disabled:opacity-40">
+            {busy ? "Funding…" : `Fund ${money(form.size || 0)}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Prop: the account. What you bet on, how it is going, how good you are at this. */
 export default function Prop() {
-  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>(() => peek<Account[]>("/api/accounts") ?? []);
   const [accountId, setAccountId] = useLocalStorage<number | null>("propAccount", null);
   const [range, setRange] = useLocalStorage<(typeof RANGES)[number]>("propRange", "1W");
-  const [data, setData] = useState<PropPayload | null>(null);
+  const [data, setData] = useState<PropPayload | null>(() => (accountId != null ? peek<PropPayload>(`/api/prop?account_id=${accountId}&range=${range.toLowerCase()}`) : undefined) ?? null);
+  const [celebrate, setCelebrate] = useState<number | null>(null);      // account id whose balance counts up from zero
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState({ name: "$10K Conservative", size: 10000, daily_loss_pct: 4, max_dd_pct: 8, target_pct: 8 });
@@ -93,8 +156,8 @@ export default function Prop() {
   const menuRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLDivElement>(null);
   useClickOutside(menuRef, () => setMenu(false), menu);
-  const [symbols, setSymbols] = useState<SymbolInfo[]>([]);
-  const [market, setMarket] = useState<MarketRow[]>([]);
+  const [symbols, setSymbols] = useState<SymbolInfo[]>(() => (peek<SymbolInfo[]>("/api/symbols") ?? []).filter((x) => x.quote === "USDT"));
+  const [market, setMarket] = useState<MarketRow[]>(() => peek<{ rows: MarketRow[] }>("/api/market")?.rows ?? []);
   const [q, setQ] = useState("");
   useClickOutside(searchRef, () => setQ(""), q !== "");
 
@@ -161,18 +224,8 @@ export default function Prop() {
         {error && <span className="text-red-400 text-sm">{error}</span>}
       </div>
       {creating && (
-        <div className="rounded border border-zinc-800 p-4 text-sm">
-          <div className="text-xs uppercase tracking-wide text-zinc-500 mb-3">New Account</div>
-          <div className="flex flex-wrap gap-4 items-end">
-            {([["name", "Name", "text"], ["size", "Starting balance ($)", "number"], ["daily_loss_pct", "Daily loss limit (%)", "number"], ["max_dd_pct", "Max drawdown (%)", "number"], ["target_pct", "Profit target (%)", "number"]] as const).map(([k, label, type]) => (
-              <label key={k} className="flex flex-col gap-1"><span className="text-zinc-400">{label}</span>
-                <input type={type} value={String(form[k])} onChange={(e) => setForm({ ...form, [k]: k === "name" ? e.target.value : Number(e.target.value) })} className="bg-zinc-900 border border-zinc-800 rounded px-3 py-1.5 w-44 num" />
-              </label>
-            ))}
-            <button onClick={async () => { try { const acc = await api.createAccount(form); setCreating(false); setAccountId(acc.id); load(); } catch (e) { setError(String((e as Error).message)); } }} className="px-4 py-2 rounded bg-zinc-100 text-zinc-900 font-semibold">Create Account</button>
-            <button onClick={() => setCreating(false)} className="px-3 py-2 rounded border border-zinc-700 text-zinc-400">Cancel</button>
-          </div>
-        </div>
+        <NewAccountModal form={form} setForm={setForm} onClose={() => setCreating(false)}
+          onCreate={async () => { try { const acc = await api.createAccount(form); setCreating(false); setAccountId(acc.id); setCelebrate(acc.id); load(); } catch (e) { setError(String((e as Error).message)); } }} />
       )}
 
       {a && (
@@ -180,7 +233,7 @@ export default function Prop() {
           <div className="flex flex-wrap items-end gap-x-8 gap-y-2">
             <div>
               <div className="text-sm uppercase tracking-wide text-zinc-500">{a.name}</div>
-              <div className="text-5xl font-semibold num tracking-tight">${a.equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+              <div className="text-5xl font-semibold num tracking-tight"><CountUp value={a.equity} animate={celebrate === a.id} onDone={() => setCelebrate(null)} /></div>
             </div>
             <div className={`num text-2xl pb-1 ${pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>{pnl >= 0 ? "+" : "−"}${Math.abs(pnl).toFixed(2)} <span className="text-xl">({fmtPct(a.returnPct)})</span></div>
             <div className="ml-auto flex items-center gap-2 self-center">
