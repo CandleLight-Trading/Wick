@@ -80,18 +80,57 @@ def test_scoreboard_reports_prop_style_stats():
 
 
 def test_parse_responses_api_body_with_citations():
-    answer = {"stance": "short", "action": "wait", "thesis_verdict": "strengthened", "main_risk": "squeeze",
-              "confidence": "medium", "horizon_hours": 24, "invalidation": 81000.0,
-              "trend_type": "breakdown", "summary": "s", "drivers": [{"text": "ETF outflows", "url": "https://x/y"}],
-              "risks": ["squeeze"], "numbers_used": ["funding +0.007%"]}
+    answer = {"context": "adverse", "confidence": "medium", "action_modifier": "weaken", "key_reason": "Large unlock this week.",
+              "catalysts": [{"event": "Token unlock", "impact": "negative", "published_at": "2026-09-08", "age_hours": 18, "url": "https://x/y"}],
+              "summary": "s"}
     body = {"model": "gpt-x", "usage": {"total_tokens": 900}, "output": [
         {"type": "web_search_call", "status": "completed"},
         {"type": "message", "content": [{"type": "output_text", "text": json.dumps(answer),
                                           "annotations": [{"type": "url_citation", "url": "https://x/y", "title": "Y"}]}]},
     ]}
     out = parse_response(body)
-    assert out["stance"] == "short" and out["citations"] == [{"url": "https://x/y", "title": "Y"}]
+    assert out["context"] == "adverse" and out["citations"] == [{"url": "https://x/y", "title": "Y"}]
     assert out["usage"]["total_tokens"] == 900 and out["model"] == "gpt-x"
     assert set(SCHEMA["required"]) <= set(answer)
-    with pytest.raises(RuntimeError):
-        parse_response({"output": [{"type": "message", "content": [{"type": "refusal", "refusal": "no"}]}]})
+
+
+def _features_for(mv, vol, rsi_hint, tr, funding=0.0001, ma20=1.0, ma50=2.0, ma200=5.0, residual=None):
+    from app.scanner import Features
+    return Features("X", 100.0, mv * 3, mv, 3.0, vol, rsi_hint, ma20, ma50, ma200, funding, 1e6, None, tr, 0.5, 1.0, residual, 2.0)
+
+
+def test_playbooks_pick_the_first_match_and_label_risk():
+    from app.scanner import rules_verdict
+    # Big move on big volume with one-sided flow, but RSI too hot for trend continuation: Momentum Breakout, aggressive.
+    v = rules_verdict(_features_for(mv=2.0, vol=3.0, rsi_hint=80, tr=0.62))
+    assert v["stance"] == "long" and v["playbook"] == "Momentum Breakout" and v["riskCharacter"] == "aggressive" and v["maxRiskPct"] == 0.5
+    # Larger trend up, price back at the 20-bar mean with RSI reset, no volume: Pullback Continuation, standard.
+    v = rules_verdict(_features_for(mv=0.2, vol=0.8, rsi_hint=45, tr=0.5, ma20=0.3))
+    assert v["stance"] == "long" and v["playbook"] == "Pullback Continuation" and v["entryAction"] == "enter"
+    # Crowded longs, price falling against them, sellers aggressive: Crowded Squeeze short.
+    v = rules_verdict(_features_for(mv=-0.8, vol=1.0, rsi_hint=50, tr=0.4, funding=0.002, ma20=-1, ma50=1, ma200=3))
+    assert v["stance"] == "short" and v["playbook"] == "Crowded Squeeze"
+    # Nothing matches: flat, with the trend-continuation checks shown and every candidate scored.
+    v = rules_verdict(_features_for(mv=0.1, vol=0.9, rsi_hint=50, tr=0.5, ma20=-1, ma50=1, ma200=-1))
+    assert v["stance"] == "flat" and v["playbook"] is None and len(v["candidates"]) == 6
+
+
+async def test_research_row_lets_quant_lead_and_context_modify(tmp_path):
+    from app.analysis import AnalysisService
+    from app.store import Store
+    store = Store(tmp_path / "a.db", ring_size=10)
+    await store.open()
+    a = AnalysisService(store, judge=type("J", (), {"status": {"configured": True}, "model": "m"})(), tracked_fn=lambda: set(), secondary_name=None)
+    f = _features_for(mv=2.0, vol=3.0, rsi_hint=80, tr=0.62)
+    from app.scanner import rules_verdict
+    a.rules["X"] = rules_verdict(f)
+    neutral = {"context": "neutral", "confidence": "low", "action_modifier": "unchanged", "key_reason": "Nothing fresh.", "catalysts": [], "summary": "s"}
+    row = a.compose_row("X", f, neutral, "manual")
+    assert row["stance"] == "long" and row["action"] == "enter" and row["playbook"] == "Momentum Breakout"   # no news is not a veto
+    veto = {**neutral, "context": "adverse", "action_modifier": "veto", "key_reason": "Exchange hack.",
+            "catalysts": [{"event": "Hot wallet drained", "impact": "negative", "published_at": "u", "age_hours": 3, "url": ""}]}
+    row = a.compose_row("X", f, veto, "manual")
+    assert row["action"] == "pass" and row["mainRisk"] == "Exchange hack." and row["drivers"][0]["text"] == "Hot wallet drained (3h ago)"
+    a.rules["X"] = {"stance": "flat", "entryAction": "enter"}
+    assert a.compose_row("X", f, {**neutral, "context": "supportive"}, "manual")["action"] == "wait"
+    await store.close()

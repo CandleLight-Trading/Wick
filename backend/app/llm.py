@@ -1,10 +1,10 @@
-"""The model judge: one OpenAI Responses API call per symbol with web search.
+"""The researcher: one OpenAI Responses API call per symbol with bounded web search.
 
-The model gets a compact evidence pack (the same numbers the rules judge used, plus the
-base rates) and must fill a fixed JSON schema: what happened, why (with links), trend
-type, stance, horizon, invalidation. Structured output keeps it from writing an essay,
-and citations keep it honest about where the news came from. It still sounds confident
-regardless of evidence; the recommendation log is the real check.
+The quant side (playbooks) decides direction. The model only answers one question: does fresh
+external information support, leave unchanged, or work against that setup? Output is a tiny
+structured object (context, modifier, one reason, dated catalysts, two sentences), because
+output tokens cost six times input and the UI composes the rest itself. "Nothing found" is
+NEUTRAL, not a veto: that single rule is what stops research from becoming a compliance desk.
 
 No SDK: the API is two HTTP calls and the raw shape is worth seeing.
 """
@@ -23,41 +23,42 @@ SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "stance": {"type": "string", "enum": ["long", "short", "flat"]},
-        "action": {"type": "string", "enum": ["enter", "wait", "pass"],
-                   "description": "enter = the current price is an acceptable entry; wait = thesis holds but entry is poor (extended, or needs a breakout); pass = no trade"},
-        "thesis_verdict": {"type": "string", "enum": ["strengthened", "unchanged", "weakened"],
-                           "description": "did the research strengthen or weaken the quantitative case?"},
-        "main_risk": {"type": "string", "description": "one short sentence"},
+        "context": {"type": "string", "enum": ["supportive", "neutral", "adverse"],
+                    "description": "does fresh external information support, leave unchanged, or work against the quantitative setup?"},
         "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
-        "horizon_hours": {"type": "integer"},
-        "invalidation": {"type": "number", "description": "price at which the view is wrong"},
-        "trend_type": {"type": "string", "enum": ["trending_up", "trending_down", "ranging", "breakout", "breakdown", "mean_reverting", "unclear"]},
-        "summary": {"type": "string", "description": "two plain sentences: what is happening and why it matters"},
-        "drivers": {"type": "array", "items": {"type": "object", "additionalProperties": False,
-                                               "properties": {"text": {"type": "string"}, "url": {"type": "string"}},
-                                               "required": ["text", "url"]}},
-        "risks": {"type": "array", "items": {"type": "string"}},
-        "numbers_used": {"type": "array", "items": {"type": "string"}},
+        "action_modifier": {"type": "string", "enum": ["strengthen", "unchanged", "weaken", "veto"],
+                            "description": "veto only for something materially adverse: security incident, delisting, large unlock, regulatory action, credible fraud"},
+        "key_reason": {"type": "string", "description": "one short plain-English sentence"},
+        "catalysts": {"type": "array", "items": {"type": "object", "additionalProperties": False,
+                                                 "properties": {"event": {"type": "string"},
+                                                                "impact": {"type": "string", "enum": ["positive", "negative", "mixed"]},
+                                                                "published_at": {"type": "string", "description": "ISO date/time if known, else 'unknown'"},
+                                                                "age_hours": {"type": "number", "description": "hours before now; -1 if unknown"},
+                                                                "url": {"type": "string"}},
+                                                 "required": ["event", "impact", "published_at", "age_hours", "url"]}},
+        "summary": {"type": "string", "description": "at most two plain sentences"},
     },
-    "required": ["stance", "action", "thesis_verdict", "main_risk", "confidence", "horizon_hours", "invalidation", "trend_type", "summary", "drivers", "risks", "numbers_used"],
+    "required": ["context", "confidence", "action_modifier", "key_reason", "catalysts", "summary"],
 }
 
-SYSTEM = """You are a market analyst assisting a discretionary trader who trades crypto prop-firm challenges
-(daily loss limit ~4%, max drawdown ~8%, holding 12-72 hours, perps allowed, funding is paid every 8h).
-You will receive an evidence pack of numbers computed locally from exchange data, plus a rules-based verdict.
-Use web search to find what happened to this asset in the last 24-48 hours: news, listings, unlocks, hacks,
-macro, ETF flows, large liquidations. Prefer primary or reputable sources; include the URL for each driver.
-The pack includes a geometric "shape" of the last three days (regression slope and R^2, efficiency ratio, variance
-ratio, bandwidth squeeze, retrace after a drop, volume climax) and how that same shape resolved on this coin before.
-Use it: a blow-off is exhaustion, not a trend to join; a squeeze implies a big move but not its direction.
-Then decide a stance for the next 12-72 hours, and separately an ACTION: "enter" only if the current price is a
-reasonable place to start the position; "wait" if the thesis holds but the entry is poor (already extended by more
-than about one daily ATR, or a breakout has not confirmed); "pass" if there is no trade. Be specific and terse.
-If evidence is thin, say flat / pass with low confidence.
-Set invalidation as a price level, typically 1-2 daily ATRs from the current price, on the side that proves the view wrong.
-Never recommend adding to a losing position. Mention funding cost if it works against the stance."""
+SYSTEM = """You are the external-context researcher for a quantitative trading terminal. A separate deterministic
+system has already evaluated price, volume, flow, positioning and chart shape and produced the setup in the pack,
+including which playbook it matched and its stance. Your task is NOT to redo technical analysis and NOT to
+require a news catalyst.
 
+Search for fresh information that materially changes the setup: project news, exchange or listing events,
+token supply and unlock events, security incidents, regulatory events, ecosystem announcements, broad market
+events, or credible explanations for the unusual price activity.
+
+Classify the external context as SUPPORTIVE, NEUTRAL or ADVERSE for the stated stance.
+NEUTRAL means no material fresh information was found. It must not by itself invalidate a quantitatively
+strong setup. Use "veto" only for something materially adverse.
+
+Freshness: the pack states the current UTC time. Prefer evidence published within the past 24 hours.
+Information 24-72 hours old may be relevant. Anything older than 7 days is background only and must not be
+presented as a fresh catalyst. Give published_at and age_hours for every catalyst when the source shows a date.
+
+Search discipline: at most three searches. Stop as soon as you can classify the context. Do not write an essay."""
 
 POSITION_SCHEMA = {
     "type": "object",
@@ -88,9 +89,9 @@ def load_api_key() -> str | None:
 
 
 def build_input(pack: dict) -> str:
-    return ("Evidence pack (all numbers computed locally, UTC, prices in USDT):\n"
-            + json.dumps(pack, indent=1, default=str)
-            + "\n\nResearch the last 24-48h of news for this asset, then fill the schema.")
+    return ("Setup pack (numbers computed locally from exchange data; prices in USDT):\n"
+            + json.dumps(pack, separators=(",", ":"), default=str)
+            + "\n\nClassify the external context for this setup and fill the schema.")
 
 
 def parse_response(body: dict) -> dict:
@@ -149,9 +150,10 @@ class OpenAIJudge:
         req = {
             "model": self.model,
             "tools": [{"type": "web_search", "search_context_size": "low"}],   # "low" keeps cost down
+            "max_tool_calls": 3,                                                 # each search is metered separately
             "input": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": build_input(pack)}],
-            "text": {"format": {"type": "json_schema", "name": "market_analysis", "schema": SCHEMA, "strict": True}},
-            "max_output_tokens": 6000,   # web-search reasoning counts against this; too low truncates the JSON
+            "text": {"format": {"type": "json_schema", "name": "context_research", "schema": SCHEMA, "strict": True}},
+            "max_output_tokens": 3000,   # search reasoning counts against this; the JSON itself is small
         }
         r = await self._client.post("/v1/responses", json=req)
         if r.status_code >= 400:

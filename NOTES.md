@@ -534,6 +534,42 @@ deployment has run a week; a Logout button (the API exists).
 - Creating an account is a proper dialog ("Fund a new desk") and the balance rolls up from
   zero on first display. Pure flair, requested.
 
+## Phase 7: playbooks, research as a job, research as context
+
+Jason, after a week: every researched setup came back WAIT or PASS, research died when he
+changed tabs, new coins felt slow, and "Needs Research" seemed to fill only at boot.
+ChatGPT's review turned that into four builds; all four are here.
+
+- **Six playbooks instead of one rule set** (`scanner.rules_verdict`). Trend Continuation
+  and Pullback Continuation (STANDARD), Relative Strength (MODERATE), Momentum Breakout,
+  Blow-off Reversal and Crowded Squeeze (AGGRESSIVE). The first whose checks all pass wins;
+  every candidate is scored (passed/of) so the UI can show how close the others came.
+  Aggressive playbooks cap risk per trade at 0.5% of equity whatever profile is chosen,
+  and the ticket says so. First live scan: 4 matches across 33 coins where the old rules
+  found only trend continuations. Extended trend entries carry `entryAction: wait`.
+- **Research is a server job.** Click -> job (queued/running/done/failed) -> the model call
+  runs whatever the browser does -> result attaches to the active setup -> a `research`
+  event over /ws tells open pages to reload. Four jobs run at once; more queue. The card
+  shows Queued…/Researching… from the payload, not from local state, so it survives
+  navigation. Header shows "2 running · 1 queued".
+- **Research is context, not a gatekeeper.** The prompt was rewritten: the quant side owns
+  direction and entry; the model classifies fresh external information as SUPPORTIVE /
+  NEUTRAL / ADVERSE with a modifier (strengthen / unchanged / weaken / veto), one reason,
+  dated catalysts and two sentences. The rule that changes Wick's personality is written
+  into the prompt: nothing found is NEUTRAL, and neutral does not invalidate a strong
+  setup. `compose_row` maps that onto the old row shape (quant flat -> WAIT if supportive
+  else PASS; veto -> PASS; weaken -> WAIT; otherwise the playbook's own entry action).
+- **Cost.** Compact input pack (a dozen numbers plus the playbook), `max_tool_calls: 3`,
+  `max_output_tokens: 3000`, tiny schema. Measured: ~22k input (mostly search content),
+  ~1.2k output, about $0.016 a call. Explicit freshness rules and `published_at` /
+  `age_hours` per catalyst; the UI shows "(3h ago)".
+- **Warmup and telemetry.** Analyze on a new coin returns at once; the backend tracks,
+  waits for the shallow backfill and scans just that coin (`scan(only=)`), while the
+  Analysis tab shows a "Warming market history…" card. Header: last scan, next scan,
+  markets checked, playbook matches, and a Scan Now button. The Needs Research contract,
+  now written in the ⓘ tooltip: a coin enters when it matches a playbook or ranks in the
+  top movers, and leaves when that stops, or when it is dismissed or researched.
+
 ## UI conventions (enforced from phase 5c on)
 
 - Navigation, buttons and section headings: Title Case (`Export Ledger`, `Open Positions`).

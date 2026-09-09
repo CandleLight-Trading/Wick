@@ -100,7 +100,18 @@ export type ServerMsg =
   | { type: "kline"; symbol: string; interval: Interval; candle: WireCandle }
   | { type: "ticker"; ticker: WireTicker }
   | { type: "depth"; depth: WireDepth }
-  | { type: "backfilled"; symbol: string; interval: Interval };
+  | { type: "backfilled"; symbol: string; interval: Interval }
+  | ({ type: "research" } & ResearchJob)
+  | { type: "scan"; lastScan: number; symbol?: string };
+
+export interface ResearchJob {
+  symbol: string;
+  state: "queued" | "running" | "done" | "failed";
+  startedAt: number;
+  finishedAt: number | null;
+  error: string | null;
+  trigger: string;
+}
 
 export interface HorizonStats {
   horizonBars: number;
@@ -199,9 +210,16 @@ export interface SlippageTable {
   rows: { notional: number; buyBps: number | null; sellBps: number | null; buyFilled: number; sellFilled: number }[];
 }
 
+export type RiskCharacter = "standard" | "moderate" | "aggressive";
+
 export interface RulesVerdict {
   source: "rules";
   stance: "long" | "short" | "flat";
+  playbook: string | null;
+  riskCharacter: RiskCharacter | null;
+  maxRiskPct: number | null;
+  entryAction: "enter" | "wait";
+  candidates: { playbook: string; riskCharacter: RiskCharacter; stance: string; passed: number; of: number }[];
   trend: string;
   horizonH: number;
   invalidation: number | null;
@@ -241,9 +259,16 @@ export interface ShapeReport {
   history: { label: string; count: number }[];
 }
 
+export interface Catalyst { event: string; impact: "positive" | "negative" | "mixed"; published_at: string; age_hours: number; url: string }
+
 export interface SetupResearch {
   time: number;
   summary: string;
+  context?: "supportive" | "neutral" | "adverse";
+  actionModifier?: "strengthen" | "unchanged" | "weaken" | "veto";
+  keyReason?: string;
+  catalysts?: Catalyst[];
+  action?: "enter" | "wait" | "pass";
   thesisVerdict: "strengthened" | "unchanged" | "weakened";
   mainRisk: string;
   confidence: string;
@@ -273,6 +298,8 @@ export interface Setup {
   researchTrigger: "manual" | "auto" | null;
   liveSignal: "long" | "short" | "flat";
   pinned: boolean;
+  playbook: string | null;
+  riskCharacter: RiskCharacter | null;
 }
 
 export interface LlmUsage {
@@ -302,6 +329,7 @@ export interface Mover {
   slippage: SlippageTable | null;
   setup: Setup | null;
   held: Held[];
+  researchJob: ResearchJob | null;
 }
 
 export interface Briefing {
@@ -374,6 +402,10 @@ export interface PlanResponse {
   advisory: boolean;
   researched: boolean;
   manual: boolean;
+  playbook: string | null;
+  riskCharacter: RiskCharacter | null;
+  riskCapPct: number | null;
+  riskNote: string | null;
 }
 
 export interface Trade {
@@ -462,6 +494,10 @@ export interface AnalysisPayload {
   desk: Briefing | null;
   lastScan: number;
   scanIntervalS: number;
+  nextScan: number | null;
+  scanStats: { checked: number; interesting: number };
+  research: { running: number; queued: number };
+  warming: string[];
   llm: { configured: boolean; model: string; error: string | null; verified: boolean; callsToday: number; dailyCap: number | null; topMovers: number; ttlH: number; usage: LlmUsage };
   movers: Mover[];
   breadth: { n: number; above20?: number; above50?: number; above200?: number; up24h?: number };

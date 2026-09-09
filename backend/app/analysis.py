@@ -55,6 +55,11 @@ class AnalysisService:
         self._top: set[str] = set()
         self._lock = asyncio.Lock()
         self._in_flight: set[str] = set()     # symbols with a model call in progress
+        self.broadcaster = None               # set by main; research and scan events are pushed to open pages
+        self.jobs: dict[str, dict] = {}       # symbol -> research job (queued | running | done | failed)
+        self._sem = asyncio.Semaphore(config.RESEARCH_CONCURRENCY)
+        self.scan_stats: dict = {"checked": 0, "interesting": 0}
+        self.warming: set[str] = set()        # symbols being tracked and backfilled right now
 
     # ---- features ---------------------------------------------------------------
     def _features(self, symbol: str) -> Features | None:
@@ -66,24 +71,19 @@ class AnalysisService:
                                 btc_d1=btc_d1, btc_ticker=self.store.tickers.get(BTC))
 
     async def evidence_pack(self, symbol: str, f: Features) -> dict:
-        h1 = await self.store.closed_history(symbol, "1h")
-        conds = evaluate_conditions(h1)
-        rates = base_rates(h1, conds)
-        hist = self.store.funding_history.get(symbol, [])
-        slip = self.slippage.get(symbol)
+        from datetime import datetime, timezone
+        rules = self.rules.get(symbol, {})
+        r = lambda v, d=2: round(v, d) if isinstance(v, float) else v
+        # Compact on purpose: input is cheap but not free, and the model is not asked to redo the numbers.
         return {
-            "symbol": symbol, "asOfUtc": now_ms() // 1000, "features": f.to_wire(),
+            "symbol": symbol, "nowUtc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "price": f.price, "change24hPct": r(f.change24hPct), "moveDailyAtr": r(f.moveAtr), "volumeVs30d": r(f.volMultiple),
+            "rsi1h": r(f.rsi, 0), "fundingPer8h": f.fundingRate, "takerBuyShare24h": r(f.takerBuyRatio24),
+            "ownMoveVsBtcPct": r(f.residual24hPct), "impliedVol30dPct": self.store.dvol.get(symbol.replace("USDT", "")),
+            "quant": {"playbook": rules.get("playbook"), "riskCharacter": rules.get("riskCharacter"), "stance": rules.get("stance"),
+                      "entry": rules.get("entryAction"), "summary": rules.get("summary")},
+            "shape": {"name": s["name"], "hitRateNet24hOnThisCoin": s["horizons"]["24h"].get("hitRateNet")} if (s := self.shapes.get(symbol)) else None,
             "marketBreadth": self.breadth,
-            "rulesVerdict": {k: v for k, v in self.rules.get(symbol, {}).items() if k != "checks"},
-            "rulesChecks": [f"{c['name']}: {'pass' if c['ok'] else 'fail'} ({c['detail']})" for c in self.rules.get(symbol, {}).get("checks", [])],
-            "conditionsTrueNow": [r["condition"] for r in rates],
-            "baseRates24hNet": {r["condition"]: {"hitRate": r["horizons"]["24h"].get("hitRateNet"), "n": r["horizons"]["24h"]["n"],
-                                                 "secondHalfHitRate": r["horizons"]["24h"].get("secondHalf", {}).get("hitRateNet")} for r in rates},
-            "funding7dPositiveShare": (sum(1 for p in hist if p.rate > 0) / len(hist)) if hist else None,
-            "impliedVol30dPct": self.store.dvol.get(symbol.replace("USDT", "")),
-            "slippageBpsAtAccountSize": next((r for r in (slip or {}).get("rows", []) if r["notional"] == config.ACCOUNT_SIZE_USD), None),
-            "recentTrackRecord": await self.store.rec_hit_rates(symbol),
-            "shape": self._shape_for_pack(symbol),
         }
 
     def _shape_for_pack(self, symbol: str) -> dict | None:
@@ -147,20 +147,26 @@ class AnalysisService:
             except Exception:
                 log.exception("analysis scan failed")
 
-    async def scan(self):
+    async def scan(self, only: set[str] | None = None):
+        """Full pass over every tracked coin, or (with `only`) recompute just those and re-rank
+        the rest from their last features: the path a freshly added coin takes."""
         async with self._lock:
             now = now_ms()
             ranked = []
             for sym in sorted(self.tracked_fn()):
-                f = self._features(sym)
-                if f is None:
-                    continue
-                self.features[sym] = f
-                await self._refresh_shape(sym)
-                verdict = rules_verdict(f, self.shapes.get(sym))
-                self.rules[sym] = verdict
-                await self._log_if_changed(sym, "rules", verdict["stance"], verdict["horizonH"], verdict["invalidation"], f, now)
+                if only is not None and sym not in only and sym in self.features:
+                    f = self.features[sym]
+                else:
+                    f = self._features(sym)
+                    if f is None:
+                        continue
+                    self.features[sym] = f
+                    await self._refresh_shape(sym)
+                    verdict = rules_verdict(f, self.shapes.get(sym))
+                    self.rules[sym] = verdict
+                    await self._log_if_changed(sym, "rules", verdict["stance"], verdict["horizonH"], verdict["invalidation"], f, now)
                 ranked.append({"symbol": sym, "score": unusualness(f), "features": f.to_wire()})
+            self.scan_stats = {"checked": len(ranked), "interesting": sum(1 for r in ranked if (self.rules.get(r["symbol"]) or {}).get("stance", "flat") != "flat")}
             ranked.sort(key=lambda r: r["score"], reverse=True)
             self.movers = ranked
             self.breadth = breadth([r["features"] for r in ranked])
@@ -180,9 +186,49 @@ class AnalysisService:
                     await self.maybe_research(sym, force=False, trigger="auto")
             if self.desk:
                 await self.desk.refresh_setups()
+        if self.broadcaster:
+            self.broadcaster.publish_all({"type": "scan", "lastScan": now // 1000})
+
+    # ---- research jobs -----------------------------------------------------------
+    def start_research(self, symbol: str, trigger: str = "manual") -> dict:
+        """Click -> job. Returns at once; the call runs on the server whatever the browser does.
+        A second click on a running symbol returns the same job."""
+        job = self.jobs.get(symbol)
+        if job and job["state"] in ("queued", "running"):
+            return job
+        job = self.jobs[symbol] = {"symbol": symbol, "state": "queued", "startedAt": now_ms(), "finishedAt": None, "error": None, "trigger": trigger}
+        asyncio.create_task(self._run_job(job))
+        return job
+
+    async def _run_job(self, job: dict):
+        sym = job["symbol"]
+        self._push_job(job)
+        async with self._sem:
+            job["state"] = "running"
+            self._push_job(job)
+            try:
+                row = await self.maybe_research(sym, force=True, trigger=job["trigger"], raise_errors=True)
+                if row is None:
+                    raise RuntimeError(self.judge.status.get("error") or "model judge unavailable")
+                if self.desk:
+                    await self.desk.attach_research_symbol(sym, row)
+                job["state"] = "done"
+            except Exception as e:
+                job["state"], job["error"] = "failed", str(e)[:300]
+                log.warning("research job %s failed: %s", sym, e)
+            job["finishedAt"] = now_ms()
+        self._push_job(job)
+
+    def _push_job(self, job: dict):
+        if self.broadcaster:
+            self.broadcaster.publish_all({"type": "research", **{k: v for k, v in job.items()}})
+
+    def jobs_summary(self) -> dict:
+        states = [j["state"] for j in self.jobs.values()]
+        return {"running": states.count("running"), "queued": states.count("queued")}
 
     # ---- model judge ------------------------------------------------------------
-    async def maybe_research(self, symbol: str, force: bool, trigger: str = "manual") -> dict | None:
+    async def maybe_research(self, symbol: str, force: bool, trigger: str = "manual", raise_errors: bool = False) -> dict | None:
         """Model call for one symbol, if fresh enough analysis is missing and budget allows.
         `trigger` is recorded on the row so the usage log says who spent the call."""
         if not self.judge.status.get("configured"):
@@ -200,25 +246,59 @@ class AnalysisService:
         except Exception as e:
             self.judge.status["error"] = str(e)[:300]
             log.warning("model judge failed for %s: %s", symbol, e)
+            if raise_errors:
+                raise
             return latest
         finally:
             self._in_flight.discard(symbol)
-        row = {
-            "symbol": symbol, "time": now_ms(), "model": answer.get("model") or self.judge.model,
-            "stance": answer["stance"], "confidence": answer["confidence"],
-            "action": answer.get("action", "pass" if answer["stance"] == "flat" else "enter"),
-            "thesisVerdict": answer.get("thesis_verdict", "unchanged"), "mainRisk": answer.get("main_risk", ""),
-            "horizonH": max(12, min(72, int(answer["horizon_hours"]))), "invalidation": float(answer["invalidation"]),
-            "trend": answer["trend_type"], "summary": answer["summary"], "price": f.price,
-            "drivers": answer["drivers"], "risks": answer["risks"], "numbers": answer["numbers_used"],
-            "citations": answer.get("citations", []), "usage": answer.get("usage", {}), "trigger": trigger,
-            "shapeAtResearch": (self.shapes.get(symbol) or {}).get("label"),
-            "rulesStanceAtResearch": (self.rules.get(symbol) or {}).get("stance"),
-        }
+        row = self.compose_row(symbol, f, answer, trigger)
         await self.store.insert_analysis(row)
         await self._log_if_changed(symbol, "model", row["stance"], row["horizonH"], row["invalidation"], f, row["time"])
         log.info("model judge %s: %s (%s), %s", symbol, row["stance"], row["confidence"], row["summary"][:80])
         return row
+
+    def compose_row(self, symbol: str, f: Features, answer: dict, trigger: str) -> dict:
+        """The quant side owns direction and entry; research only modifies it.
+          quant flat            -> WAIT if context is supportive (worth watching), else PASS
+          modifier veto         -> PASS, adverse reason shown
+          modifier weaken       -> WAIT (the idea holds, not at this price / not yet)
+          strengthen/unchanged  -> the playbook's own entry action (enter, or wait if extended)"""
+        rules = self.rules.get(symbol) or {}
+        q_stance, q_action = rules.get("stance", "flat"), rules.get("entryAction", "enter")
+        ctx, mod = answer.get("context", "neutral"), answer.get("action_modifier", "unchanged")
+        if q_stance == "flat":
+            stance, action = "flat", ("wait" if ctx == "supportive" else "pass")
+        elif mod == "veto":
+            stance, action = q_stance, "pass"
+        elif mod == "weaken":
+            stance, action = q_stance, "wait"
+        else:
+            stance, action = q_stance, q_action
+        cats = answer.get("catalysts", [])
+        negative = [c for c in cats if c.get("impact") == "negative"]
+
+        def age(c):
+            h = c.get("age_hours", -1)
+            return "" if h is None or h < 0 else f" ({h:.0f}h ago)" if h < 48 else f" ({h / 24:.0f}d ago)"
+        drivers = [{"text": f"{c['event']}{age(c)}", "url": c.get("url", "")} for c in cats]
+        inv = rules.get("invalidation") or (f.price * (1 - 1.5 * (f.atrDailyPct or 3) / 100) if stance != "short" else f.price * (1 + 1.5 * (f.atrDailyPct or 3) / 100))
+        trend_map = {"trend_up": "trending_up", "flag_up": "trending_up", "trend_down": "trending_down", "flag_down": "trending_down",
+                     "blowoff_up": "breakout", "capitulation": "breakdown", "range": "ranging", "chop": "ranging", "squeeze": "ranging"}
+        return {
+            "symbol": symbol, "time": now_ms(), "model": answer.get("model") or self.judge.model,
+            "stance": stance, "confidence": answer.get("confidence", "low"), "action": action,
+            "thesisVerdict": {"strengthen": "strengthened", "weaken": "weakened", "veto": "weakened"}.get(mod, "unchanged"),
+            "mainRisk": answer.get("key_reason", "") if ctx == "adverse" else (negative[0]["event"] if negative else ""),
+            "horizonH": rules.get("horizonH", 48), "invalidation": float(inv),
+            "trend": trend_map.get((self.shapes.get(symbol) or {}).get("label"), "unclear"),
+            "summary": answer.get("summary", ""), "price": f.price,
+            "drivers": drivers, "risks": [c["event"] for c in negative], "numbers": [],
+            "context": ctx, "actionModifier": mod, "keyReason": answer.get("key_reason", ""), "catalysts": cats,
+            "playbook": rules.get("playbook"), "riskCharacter": rules.get("riskCharacter"),
+            "citations": answer.get("citations", []), "usage": answer.get("usage", {}), "trigger": trigger,
+            "shapeAtResearch": (self.shapes.get(symbol) or {}).get("label"),
+            "rulesStanceAtResearch": q_stance,
+        }
 
     # ---- recommendation log + paper positions ---------------------------------
     async def _log_if_changed(self, symbol, source, stance, horizon_h, invalidation, f: Features, now):
@@ -301,7 +381,8 @@ class AnalysisService:
             else:
                 research_state = "fresh"
         return {"id": s["id"], "state": s["state"], "quality": s["quality"], "bias": s["bias"], "concern": s["concern"],
-                "recommendation": s["recommendation"], "detectedAt": s["detected_at"] // 1000, "timeframe": s["timeframe"],
+                "recommendation": s["recommendation"], "detectedAt": s["detected_at"] // 1000,
+                "playbook": p.get("playbook"), "riskCharacter": p.get("riskCharacter"), "timeframe": s["timeframe"],
                 "horizonH": s["horizon_h"], "checks": p.get("checks", []), "research": r,
                 "researchState": research_state, "researchAgeS": age_s, "staleReasons": reasons, "pinned": bool(p.get("pinned")),
                 "researchTrigger": (r or {}).get("trigger"), "liveSignal": (self.rules.get(sym) or {}).get("stance", "flat")}
@@ -334,11 +415,15 @@ class AnalysisService:
         return {
             "desk": await self.desk.briefing() if self.desk else None,
             "lastScan": self.last_scan_ms // 1000, "scanIntervalS": config.SCAN_INTERVAL_S,
+            "nextScan": (self.last_scan_ms // 1000 + config.SCAN_INTERVAL_S) if self.last_scan_ms else None,
+            "scanStats": self.scan_stats, "research": self.jobs_summary(),
+            "warming": sorted(s for s in self.warming if s not in self.features),
             "llm": {**self.judge.status, "callsToday": await self.store.analyses_today(), "dailyCap": None,
                     "topMovers": config.TOP_MOVERS, "ttlH": config.LLM_RESEARCH_TTL_S // 3600, "usage": await self.llm_usage()},
             "movers": [{**m, "rules": self.rules.get(m["symbol"]), "model": analyses.get(m["symbol"]),
                         "shape": self.shapes.get(m["symbol"]), "slippage": self.slippage.get(m["symbol"]),
-                        "setup": self._setup_wire(setups.get(m["symbol"])), "held": held.get(m["symbol"], [])} for m in self.movers],
+                        "setup": self._setup_wire(setups.get(m["symbol"])), "held": held.get(m["symbol"], []),
+                        "researchJob": self.jobs.get(m["symbol"])} for m in self.movers],
             "breadth": self.breadth, "tracker": await self._tracker(), "dvol": self.store.dvol,
             "alerts": {**(self.alerts.status() if self.alerts else {"configured": False}), "recent": list(self.alerts.recent)[:30] if self.alerts else []},
             "dailyLossBudgetPct": config.DAILY_LOSS_BUDGET_PCT, "accountSize": config.ACCOUNT_SIZE_USD,

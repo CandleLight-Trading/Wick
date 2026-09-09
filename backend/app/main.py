@@ -193,6 +193,7 @@ async def lifespan(app: FastAPI):
 
     desk = Desk(store, analysis, alerts, track_fn=track)
     analysis.desk = desk
+    analysis.broadcaster = broadcaster
     await desk.ensure_default_account()
 
     async def monitor_loop():

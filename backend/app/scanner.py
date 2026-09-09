@@ -97,62 +97,176 @@ def unusualness(f: Features) -> float:
     return round(s, 3)
 
 
-def rules_verdict(f: Features, shape: dict | None = None) -> dict:
-    """Transparent stance. Every check is reported so the UI can show why.
-    The shape engine adds one veto: a blow-off or capitulation bar is exhaustion, not a trend
-    to join, and a shape whose own base rate on this coin is clearly adverse (n >= 30 and
-    net hit rate under 40% at +24h in the stance direction) blocks the call."""
+# ---- playbooks -------------------------------------------------------------------------
+# Six ways a coin can be interesting, each with its own checks and its own risk character.
+# The first playbook whose checks all pass wins; the others are reported as candidates so
+# the UI can show how close they came. STANDARD playbooks size at the trader's profile;
+# AGGRESSIVE ones are capped at 0.5% of equity because their failures are violent.
+PLAYBOOKS = [
+    ("Trend Continuation", "standard"),
+    ("Pullback Continuation", "standard"),
+    ("Relative Strength", "moderate"),
+    ("Momentum Breakout", "aggressive"),
+    ("Blow-off Reversal", "aggressive"),
+    ("Crowded Squeeze", "aggressive"),
+]
+PLAYBOOK_MAX_RISK_PCT = {"standard": 0.75, "moderate": 0.75, "aggressive": 0.5}
+PLAYBOOK_SUMMARY = {
+    "Trend Continuation": "Established trend with volume, aggressors on the trend side, not extended into an extreme.",
+    "Pullback Continuation": "Larger trend intact and price has come back to the 20-bar mean with RSI reset.",
+    "Relative Strength": "Moving on its own, beyond what BTC explains, with the larger trend behind it.",
+    "Momentum Breakout": "Exceptional move on exceptional volume with one-sided flow. Can fail violently; size small.",
+    "Blow-off Reversal": "An exhaustion bar with RSI at an extreme and aggressors already flipping. Fade with confirmation only.",
+    "Crowded Squeeze": "Funding says one side is crowded and price is moving against that crowd. Squeezes are fast; size small.",
+}
+
+
+def _checks():
     checks = []
 
     def check(name: str, ok: bool | None, detail: str):
         checks.append({"name": name, "ok": ok, "detail": detail})
         return bool(ok)
+    return checks, check
 
+
+def _fmt(v, f="{:.2f}", none="n/a"):
+    return f.format(v) if v is not None else none
+
+
+def rules_verdict(f: Features, shape: dict | None = None) -> dict:
+    """Transparent stance from the first playbook whose checks all pass. Every check of every
+    playbook is reported so the UI can show why, and how close the others came. The shape
+    engine adds one veto on top: a shape whose own base rate on this coin is clearly adverse
+    (n >= 30 and net hit rate under 40% at +24h in the stance direction) blocks the call."""
     above = [x is not None and x > 0 for x in (f.ma20Pct, f.ma50Pct, f.ma200Pct)]
     below = [x is not None and x < 0 for x in (f.ma20Pct, f.ma50Pct, f.ma200Pct)]
     trend = "up" if all(above) else "down" if all(below) else "mixed"
-    check("Trend (price vs 20/50/200 MA, 1h bars)", trend != "mixed", f"{trend}: {f.ma20Pct:+.2f}% / {f.ma50Pct:+.2f}% / {f.ma200Pct:+.2f}%" if f.ma200Pct is not None else "not enough history")
-    vol_ok = check("Volume confirms (>= 1.3x 30d avg)", f.volMultiple is not None and f.volMultiple >= 1.3, f"{f.volMultiple:.2f}x" if f.volMultiple is not None else "n/a")
+    big_up = f.ma50Pct is not None and f.ma200Pct is not None and f.ma50Pct > 0 and f.ma200Pct > 0
+    big_down = f.ma50Pct is not None and f.ma200Pct is not None and f.ma50Pct < 0 and f.ma200Pct < 0
     crowded_long = f.fundingRate is not None and f.fundingRate > FUNDING_CROWDED_LONG
     crowded_short = f.fundingRate is not None and f.fundingRate < FUNDING_CROWDED_SHORT
-    check("Funding not crowded", not (crowded_long or crowded_short),
-          f"{f.fundingRate * 100:+.4f}%/8h" if f.fundingRate is not None else "no perp data")
-    rsi_ok_long = f.rsi is not None and f.rsi < 75
-    rsi_ok_short = f.rsi is not None and f.rsi > 25
-    check("RSI not at an extreme", (rsi_ok_long if trend == "up" else rsi_ok_short) if f.rsi is not None else None,
-          f"RSI {f.rsi:.0f}" if f.rsi is not None else "n/a")
-    moved = f.moveAtr is not None and abs(f.moveAtr) >= 0.5
-    check("Move is meaningful (>= 0.5 daily ATR)", moved, f"{f.moveAtr:+.2f} ATR" if f.moveAtr is not None else "n/a")
+    funding_txt = f"{f.fundingRate * 100:+.4f}%/8h" if f.fundingRate is not None else "no perp data"
     tr = f.takerBuyRatio24
-    flow_long = tr is not None and tr > 0.5
-    flow_short = tr is not None and tr < 0.5
-    check("Taker flow agrees (aggressors on the trend side)",
-          None if tr is None or trend == "mixed" else (flow_long if trend == "up" else flow_short),
-          f"{tr * 100:.0f}% of 24h volume was aggressive buying" + (f" (30d avg {f.takerBuyRatio30d * 100:.0f}%)" if f.takerBuyRatio30d else "") if tr is not None else "no flow data yet")
+    flow_txt = (f"{tr * 100:.0f}% of 24h volume was aggressive buying" + (f" (30d avg {f.takerBuyRatio30d * 100:.0f}%)" if f.takerBuyRatio30d else "")) if tr is not None else "no flow data yet"
+    mv = f.moveAtr
+    label = shape["label"] if shape else None
+    exhausted = label in ("blowoff_up", "capitulation")
+    trend_txt = f"{trend}: {f.ma20Pct:+.2f}% / {f.ma50Pct:+.2f}% / {f.ma200Pct:+.2f}%" if f.ma200Pct is not None else "not enough history"
 
-    if trend == "up" and vol_ok and not crowded_long and rsi_ok_long and moved and (f.moveAtr or 0) > 0 and flow_long:
-        stance = "long"
-    elif trend == "down" and vol_ok and not crowded_short and rsi_ok_short and moved and (f.moveAtr or 0) < 0 and flow_short:
-        stance = "short"
-    else:
-        stance = "flat"
+    def trend_continuation():
+        checks, check = _checks()
+        check("Trend (price vs 20/50/200 MA, 1h bars)", trend != "mixed", trend_txt)
+        vol_ok = check("Volume confirms (>= 1.3x 30d avg)", f.volMultiple is not None and f.volMultiple >= 1.3, f"{_fmt(f.volMultiple)}x")
+        check("Funding not crowded", not (crowded_long or crowded_short), funding_txt)
+        rsi_ok_long = f.rsi is not None and f.rsi < 75
+        rsi_ok_short = f.rsi is not None and f.rsi > 25
+        check("RSI not at an extreme", (rsi_ok_long if trend == "up" else rsi_ok_short) if f.rsi is not None else None, f"RSI {_fmt(f.rsi, '{:.0f}')}")
+        moved = mv is not None and abs(mv) >= 0.5
+        check("Move is meaningful (>= 0.5 daily ATR)", moved, f"{_fmt(mv, '{:+.2f}')} ATR")
+        flow_long = tr is not None and tr > 0.5
+        flow_short = tr is not None and tr < 0.5
+        check("Taker flow agrees (aggressors on the trend side)", None if tr is None or trend == "mixed" else (flow_long if trend == "up" else flow_short), flow_txt)
+        if trend == "up" and vol_ok and not crowded_long and rsi_ok_long and moved and mv > 0 and flow_long:
+            return "long", checks
+        if trend == "down" and vol_ok and not crowded_short and rsi_ok_short and moved and mv < 0 and flow_short:
+            return "short", checks
+        return "flat", checks
 
-    if shape:
-        label = shape["label"]
+    def pullback():
+        checks, check = _checks()
+        side = "long" if big_up else "short" if big_down else None
+        check("Larger trend (price vs 50/200 MA)", side is not None, trend_txt)
+        near = f.ma20Pct is not None and f.atrDailyPct and abs(f.ma20Pct) <= 0.5 * f.atrDailyPct
+        check("Pulled back to the 20-bar mean (within half a daily ATR)", bool(near), f"{_fmt(f.ma20Pct, '{:+.2f}')}% from MA20, ATR {_fmt(f.atrDailyPct)}%")
+        rsi_ok = f.rsi is not None and ((35 <= f.rsi <= 60) if side == "long" else (40 <= f.rsi <= 65) if side == "short" else False)
+        check("RSI reset (35-60 long, 40-65 short)", rsi_ok if f.rsi is not None else None, f"RSI {_fmt(f.rsi, '{:.0f}')}")
+        check("Funding not crowded", not (crowded_long or crowded_short), funding_txt)
+        check("Not an exhaustion bar", not exhausted, shape["name"] if shape else "no shape yet")
+        ok = side and near and rsi_ok and not (crowded_long or crowded_short) and not exhausted
+        return (side if ok else "flat"), checks
+
+    def relative_strength():
+        checks, check = _checks()
+        r = f.residual24hPct
+        side = "long" if r is not None and r >= 3 else "short" if r is not None and r <= -3 else None
+        check("Own move vs BTC (beta-adjusted) >= 3%", side is not None, f"{_fmt(r, '{:+.2f}')}%, beta {_fmt(f.betaBtc)}")
+        aligned = (big_up if side == "long" else big_down if side == "short" else False)
+        check("Larger trend agrees (50/200 MA)", aligned if side else None, trend_txt)
+        vol_ok = f.volMultiple is not None and f.volMultiple >= 1.0
+        check("Volume at least average", vol_ok, f"{_fmt(f.volMultiple)}x")
+        crowded = crowded_long if side == "long" else crowded_short
+        check("Funding not crowded on this side", not crowded, funding_txt)
+        rsi_ok = f.rsi is not None and (f.rsi < 80 if side == "long" else f.rsi > 20)
+        check("RSI not beyond 80/20", rsi_ok if f.rsi is not None else None, f"RSI {_fmt(f.rsi, '{:.0f}')}")
+        ok = side and aligned and vol_ok and not crowded and rsi_ok and not exhausted
+        return (side if ok else "flat"), checks
+
+    def momentum_breakout():
+        checks, check = _checks()
+        side = "long" if mv is not None and mv >= 1.5 else "short" if mv is not None and mv <= -1.5 else None
+        check("Move >= 1.5 daily ATR", side is not None, f"{_fmt(mv, '{:+.2f}')} ATR")
+        vol_ok = f.volMultiple is not None and f.volMultiple >= 2.0
+        check("Volume >= 2x 30d avg", vol_ok, f"{_fmt(f.volMultiple)}x")
+        flow_ok = tr is not None and ((tr > 0.55) if side == "long" else (tr < 0.45) if side == "short" else False)
+        check("Taker flow strongly one-sided (>55% / <45%)", flow_ok if tr is not None and side else None, flow_txt)
+        ma_ok = f.ma20Pct is not None and ((f.ma20Pct > 0) if side == "long" else (f.ma20Pct < 0) if side == "short" else False)
+        check("Price on the right side of the 20-bar mean", ma_ok if side else None, f"{_fmt(f.ma20Pct, '{:+.2f}')}% from MA20")
+        rsi_ok = f.rsi is not None and (f.rsi < 85 if side == "long" else f.rsi > 15)
+        check("RSI not beyond 85/15", rsi_ok if f.rsi is not None else None, f"RSI {_fmt(f.rsi, '{:.0f}')}")
+        check("Not an exhaustion bar", not exhausted, shape["name"] if shape else "no shape yet")
+        crowded = crowded_long if side == "long" else crowded_short
+        check("Funding not crowded on this side", not crowded, funding_txt)
+        ok = side and vol_ok and flow_ok and ma_ok and rsi_ok and not exhausted and not crowded
+        return (side if ok else "flat"), checks
+
+    def blowoff_reversal():
+        checks, check = _checks()
+        side = "short" if label == "blowoff_up" else "long" if label == "capitulation" else None
+        check("Exhaustion shape present (blow-off or capitulation)", side is not None, shape["name"] if shape else "no shape yet")
+        rsi_ok = f.rsi is not None and ((f.rsi > 78) if side == "short" else (f.rsi < 22) if side == "long" else False)
+        check("RSI at an extreme (>78 / <22)", rsi_ok if f.rsi is not None and side else None, f"RSI {_fmt(f.rsi, '{:.0f}')}")
+        flow_ok = tr is not None and ((tr < 0.5) if side == "short" else (tr > 0.5) if side == "long" else False)
+        check("Aggressors already flipping against the move", flow_ok if tr is not None and side else None, flow_txt)
+        ok = side and rsi_ok and flow_ok
+        return (side if ok else "flat"), checks
+
+    def crowded_squeeze():
+        checks, check = _checks()
+        side = "short" if crowded_long else "long" if crowded_short else None
+        check("Funding crowded on one side", side is not None, funding_txt)
+        against = mv is not None and ((mv <= -0.5) if side == "short" else (mv >= 0.5) if side == "long" else False)
+        check("Price moving against the crowd (>= 0.5 ATR)", against if side else None, f"{_fmt(mv, '{:+.2f}')} ATR")
+        flow_ok = tr is not None and ((tr < 0.5) if side == "short" else (tr > 0.5) if side == "long" else False)
+        check("Taker flow with the squeeze", flow_ok if tr is not None and side else None, flow_txt)
+        check("Not an exhaustion bar", not exhausted, shape["name"] if shape else "no shape yet")
+        ok = side and against and flow_ok and not exhausted
+        return (side if ok else "flat"), checks
+
+    evals = {"Trend Continuation": trend_continuation, "Pullback Continuation": pullback, "Relative Strength": relative_strength,
+             "Momentum Breakout": momentum_breakout, "Blow-off Reversal": blowoff_reversal, "Crowded Squeeze": crowded_squeeze}
+    candidates, stance, playbook, character, checks = [], "flat", None, None, None
+    for name, risk in PLAYBOOKS:
+        s, cs = evals[name]()
+        passed = sum(1 for c in cs if c["ok"]), sum(1 for c in cs if c["ok"] is not None)
+        candidates.append({"playbook": name, "riskCharacter": risk, "stance": s, "passed": passed[0], "of": passed[1]})
+        if s != "flat" and playbook is None:
+            stance, playbook, character, checks = s, name, risk, cs
+    if checks is None:
+        checks = evals["Trend Continuation"]()[1]          # the default story when nothing matches
+
+    if shape and stance != "flat":
         h24 = shape["horizons"]["24h"]
-        exhausted = label in ("blowoff_up", "capitulation")
-        # forward_stats measures long returns; a short wants the mirror image.
-        hit = h24.get("hitRateNet")
-        adverse = (not h24["underpowered"] and hit is not None and stance != "flat"
+        hit = h24.get("hitRateNet")                          # forward_stats measures long returns; a short wants the mirror image
+        adverse = (not h24["underpowered"] and hit is not None
                    and ((stance == "long" and hit < 0.4) or (stance == "short" and hit > 0.6)))
-        ok = None if stance == "flat" else not (exhausted or adverse)
-        detail = f"{shape['name']}"
-        if hit is not None:
-            detail += f"; on this coin +24h long hit {hit * 100:.0f}% (n={h24['n']}{', too few' if h24['underpowered'] else ''})"
-        check("Shape does not veto", ok, detail)
-        if stance != "flat" and ok is False:
+        detail = f"{shape['name']}" + (f"; on this coin +24h long hit {hit * 100:.0f}% (n={h24['n']}{', too few' if h24['underpowered'] else ''})" if hit is not None else "")
+        checks = checks + [{"name": "Shape base rate does not veto", "ok": not adverse, "detail": detail}]
+        if adverse:
             stance = "flat"
 
+    # Extended trend entries wait for a pullback; everything else is an entry at market.
+    entry_action = "wait" if playbook in ("Trend Continuation", "Relative Strength") and mv is not None and abs(mv) > 1.0 else "enter"
     inv = None
     dist_pct = 1.5 * f.atrDailyPct if f.atrDailyPct else None
     if stance == "long" and dist_pct:
@@ -161,12 +275,14 @@ def rules_verdict(f: Features, shape: dict | None = None) -> dict:
         inv = f.price * (1 + dist_pct / 100)
     return {
         "source": "rules", "stance": stance, "trend": trend, "horizonH": REC_HORIZON_H,
+        "playbook": playbook if stance != "flat" else None, "riskCharacter": character if stance != "flat" else None,
+        "maxRiskPct": PLAYBOOK_MAX_RISK_PCT.get(character) if stance != "flat" else None,
+        "entryAction": entry_action, "candidates": candidates,
         "invalidation": inv, "invalidationPct": dist_pct if stance != "flat" else None,
         # Position size so that a stop-out costs DAILY_LOSS_BUDGET_PCT of the account.
         "suggestedNotionalPct": (DAILY_LOSS_BUDGET_PCT / dist_pct * 100) if stance != "flat" and dist_pct else None,
         # Volatility-targeted alternative: size so that a one-sigma day costs the same budget.
         "volTargetNotionalPct": (DAILY_LOSS_BUDGET_PCT / f.ewmaDailyVolPct * 100) if stance != "flat" and f.ewmaDailyVolPct else None,
         "checks": checks,
-        "summary": {"long": "Uptrend with volume, funding not crowded, shape allows.", "short": "Downtrend with volume, funding not crowded, shape allows.",
-                    "flat": "Not all checks pass; no position."}[stance],
+        "summary": PLAYBOOK_SUMMARY[playbook] if stance != "flat" and playbook else "No playbook matches; no position.",
     }

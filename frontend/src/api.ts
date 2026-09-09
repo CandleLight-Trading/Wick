@@ -1,4 +1,4 @@
-import type { Account, AnalysisPayload, ClosePreview, ConditionEvent, ContextData, Interval, MarketRow, ModelAnalysis, PaperPayload, PlanResponse, PositionResearch, PropPayload, Status, SymbolInfo, Trade, WireCandle } from "./types";
+import type { ResearchJob, Account, AnalysisPayload, ClosePreview, ConditionEvent, ContextData, Interval, MarketRow, PaperPayload, PlanResponse, PositionResearch, PropPayload, Status, SymbolInfo, Trade, WireCandle } from "./types";
 
 /** A 401 anywhere means the session is gone: the app shows the login screen. */
 export const UNAUTHORIZED = "wick:unauthorized";
@@ -43,13 +43,9 @@ export const api = {
   status: () => get<Status>("/api/status"),
   analysis: () => get<AnalysisPayload>("/api/analysis"),
   paper: () => get<PaperPayload>("/api/paper"),
-  runAnalysis: async (symbol: string) => {
-    const r = await fetch(`/api/analysis/run?symbol=${symbol}`, { method: "POST" });
-    if (!r.ok) throw new Error(await r.text());
-    return r.json() as Promise<ModelAnalysis>;
-  },
+  runAnalysis: (symbol: string) => post<ResearchJob>(`/api/analysis/run?symbol=${symbol}`),
   // Phase 5: setups, accounts, trades
-  researchSetup: (id: number) => post(`/api/setups/${id}/research`),
+  researchSetup: (id: number) => post<{ researchJob?: ResearchJob }>(`/api/setups/${id}/research`),
   passSetup: (id: number) => post(`/api/setups/${id}/pass`),
   pinSetup: (symbol: string) => post(`/api/setups/pin?symbol=${symbol}`),
   clearResearch: (id?: number) => post(id != null ? `/api/setups/${id}/clear_research` : "/api/analysis/clear_research"),

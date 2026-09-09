@@ -145,6 +145,7 @@ export default function TradeTicket({ setupId, symbol, side: fixedSide, onClose,
                 {p.trigger_kind && <span className="text-sm text-zinc-500">· {p.trigger_kind} entry, watched every minute</span>}
               </div>
               <div className="text-sm text-zinc-400 mt-1">{setupId && !plan.researched ? "Not researched yet. " : ""}{p.reason}</div>
+              {plan.playbook && <div className="text-sm mt-1"><span className="text-zinc-500">Playbook</span> <span className="text-zinc-200">{plan.playbook}</span> <span className={`ml-1 text-xs uppercase tracking-wide px-1.5 py-0.5 rounded border ${plan.riskCharacter === "aggressive" ? "border-amber-700 text-amber-300" : "border-zinc-700 text-zinc-400"}`}>{plan.riskCharacter}</span>{plan.riskNote && <span className="text-amber-200/90 ml-2">{plan.riskNote}</span>}</div>}
             </div>
 
             <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 mb-3">

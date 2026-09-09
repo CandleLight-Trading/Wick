@@ -45,4 +45,5 @@ export const fmtPct = (x: number | null | undefined, digits = 2) =>
 export const fmtCompact = (x: number | null | undefined) =>
   x == null ? "–" : Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 2 }).format(x);
 export const fmtNum = (x: number | null | undefined, digits = 2) => (x == null ? "–" : x.toFixed(digits));
+export const fmtClock = (s: number) => new Date(s * 1000).toISOString().slice(11, 16) + " UTC";
 export const fmtTime = (s: number) => new Date(s * 1000).toISOString().replace("T", " ").slice(0, 16) + " UTC";

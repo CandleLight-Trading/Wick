@@ -170,17 +170,16 @@ async def analysis(request: Request):
 
 @router.post("/api/analysis/run")
 async def analysis_run(request: Request, symbol: str):
-    """On-demand model call for one symbol."""
+    """On-demand research for one symbol: starts a job and returns at once."""
     c = ready_ctx(request)
     symbol = symbol.upper()
     if symbol not in c.ingest.tracked:
         raise HTTPException(404, f"{symbol} is not tracked")
-    if symbol not in c.analysis.features:
-        await c.analysis.scan()
-    row = await c.analysis.maybe_research(symbol, force=True)
-    if row is None:
+    if not c.analysis.judge.status.get("configured"):
         raise HTTPException(409, c.analysis.judge.status.get("error") or "model judge unavailable")
-    return row
+    if symbol not in c.analysis.features:
+        await c.analysis.scan(only={symbol})
+    return c.analysis.start_research(symbol)
 
 
 @router.get("/api/paper")
@@ -226,8 +225,12 @@ def _perm(e: Exception):
 
 @router.post("/api/setups/{setup_id}/research")
 async def setup_research(setup_id: int, request: Request):
+    """Starts a research job and returns immediately. The page learns the result over /ws."""
+    c = ready_ctx(request)
+    if not c.analysis.judge.status.get("configured"):
+        raise HTTPException(409, c.analysis.judge.status.get("error") or "model judge unavailable")
     try:
-        return await ready_ctx(request).desk.research(setup_id)
+        return await c.desk.research(setup_id)
     except Exception as e:
         raise _perm(e)
 
@@ -288,13 +291,29 @@ async def analysis_scan(request: Request, symbol: str | None = None):
     c = ctx(request)
     if symbol:
         symbol = symbol.upper()
-        if symbol not in c.ingest.tracked and c.desk.track_fn:
-            await c.desk.track_fn(symbol)
-        # A coin with no candles yet would scan as nothing and sit blank until the next
-        # 15-minute scan. Its shallow sync takes a few seconds; wait for it (bounded).
-        await c.ingest.wait_synced(symbol, timeout=45)
+        if symbol in c.analysis.features:
+            await c.analysis.scan(only={symbol})
+            return {"ok": True, "lastScan": ms_to_s(c.analysis.last_scan_ms), "warming": False}
+        # New coin: track it, wait for its shallow backfill, scan just it. All in the background so
+        # the page can show a "warming" card at once instead of a spinner on a button.
+        c.analysis.warming.add(symbol)
+
+        async def warm():
+            try:
+                if symbol not in c.ingest.tracked and c.desk.track_fn:
+                    await c.desk.track_fn(symbol)
+                await c.ingest.wait_synced(symbol, timeout=60)
+                await c.analysis.scan(only={symbol})
+            except Exception:
+                log.exception("warmup for %s failed", symbol)
+            finally:
+                c.analysis.warming.discard(symbol)
+                if c.analysis.broadcaster:
+                    c.analysis.broadcaster.publish_all({"type": "scan", "lastScan": ms_to_s(c.analysis.last_scan_ms), "symbol": symbol})
+        asyncio.create_task(warm())
+        return {"ok": True, "lastScan": ms_to_s(c.analysis.last_scan_ms), "warming": True}
     await c.analysis.scan()
-    return {"ok": True, "lastScan": ms_to_s(c.analysis.last_scan_ms)}
+    return {"ok": True, "lastScan": ms_to_s(c.analysis.last_scan_ms), "warming": False}
 
 
 @router.get("/api/equity")

@@ -20,6 +20,7 @@ export default function Market() {
   // ANALYZE: track the coin if needed, rescan now, then open it on the Analysis tab.
   const analyze = async (symbol: string) => {
     setAnalyzing(symbol);
+    // The backend tracks and warms the coin in the background; Analysis shows a warming card meanwhile.
     try { await api.scan(symbol); navigate("analysis", { symbol }); } catch (e) { console.error(e); }
     setAnalyzing(null);
   };

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, peek } from "../api";
-import { fmtCompact, fmtNum, fmtPct, fmtPrice, fmtTime, useClickOutside, useLocalStorage } from "../store";
+import { fmtClock, fmtCompact, fmtNum, fmtPct, fmtPrice, fmtTime, useClickOutside, useLocalStorage } from "../store";
 import type { AnalysisPayload, Mover, PaperPayload, ShapeReport, SlippageTable } from "../types";
+import { useServerMessages } from "../ws";
 import { navigate } from "../App";
 import TradeTicket from "../components/TradeTicket";
 import Term from "../components/Term";
@@ -184,6 +185,10 @@ function MoverCard({ m, budget, account, a, focused }: { m: Mover; budget: numbe
   const headline = !s ? "WATCHING" : researched
     ? (rs === "stale" ? "RESEARCH STALE" : rec === "pass" ? "PASS" : rec === "wait" ? `WAIT · ${s.bias.toUpperCase()} BIAS` : `ENTER · ${s.bias.toUpperCase()}`)
     : s.quality === "weak" ? "WEAK" : `PROMISING ${s.bias === "neutral" ? "SETUP" : s.bias.toUpperCase()}`;
+  const job = m.researchJob;
+  const busy = !!job && (job.state === "queued" || job.state === "running");
+  const playbook = s?.playbook ?? m.rules?.playbook ?? null;
+  const character = s?.riskCharacter ?? m.rules?.riskCharacter ?? null;
   const primary = "px-3 py-1.5 rounded bg-zinc-100 text-zinc-900 text-sm font-semibold uppercase tracking-wide disabled:opacity-40";
   const quiet = "px-2 py-1.5 rounded border border-zinc-800 text-zinc-500 hover:text-zinc-200 text-sm";
   const stale1 = s?.staleReasons?.[0];
@@ -196,6 +201,10 @@ function MoverCard({ m, budget, account, a, focused }: { m: Mover; budget: numbe
         {s && <span className="text-sm text-zinc-500" title={`Added to Analysis ${fmtTime(s.detectedAt)}`}>Added {ago(Date.now() / 1000 - s.detectedAt)}</span>}
         {s && <Term k="quality" value={s.quality}><span className={`text-xs uppercase tracking-wide px-1.5 py-1 rounded border cursor-help ${QUALITY[s.quality]}`}>{s.quality} setup</span></Term>}
         <span className={`text-[15px] font-semibold tracking-wide ${rs === "stale" ? "text-amber-300" : "text-zinc-100"}`}>{headline}</span>
+        {playbook && <span className="text-sm text-zinc-300" title={m.rules?.summary ?? ""}>{playbook}</span>}
+        {character && <span className={`text-xs uppercase tracking-wide px-1.5 py-1 rounded border ${character === "aggressive" ? "border-amber-700 text-amber-300" : character === "moderate" ? "border-sky-800 text-sky-300" : "border-zinc-700 text-zinc-400"}`} title={character === "aggressive" ? "Aggressive playbook: failures are fast, so risk per trade is capped at 0.5% of equity." : character === "moderate" ? "Moderate playbook: standard sizing, a bit more room for the trade to be wrong." : "Standard playbook: sized at your chosen risk profile."}>{character}</span>}
+        {busy && <span className="text-sm text-sky-300 animate-pulse">{job!.state === "queued" ? "Queued…" : "Researching…"}</span>}
+        {job?.state === "failed" && !researched && <span className="text-sm text-red-400" title={job.error ?? ""}>Research failed</span>}
         {held.length > 0 && (
           <button onClick={() => navigate("prop")} className="text-sm px-2 py-1 rounded border border-sky-800/60 text-sky-300">
             {held.length === 1 ? `OPEN · ${held[0].unrealizedUsd != null ? `${held[0].unrealizedUsd >= 0 ? "+" : ""}$${held[0].unrealizedUsd.toFixed(0)}` : ""} ${held[0].unrealizedR != null ? `· ${held[0].unrealizedR >= 0 ? "+" : ""}${held[0].unrealizedR.toFixed(2)}R` : ""} · ${held[0].status === "hold" ? "thesis intact" : held[0].status.replace("_", " ")}` : `OPEN IN ${held.length} ACCOUNTS`} · View
@@ -204,12 +213,12 @@ function MoverCard({ m, budget, account, a, focused }: { m: Mover; budget: numbe
         {pending.length > 0 && <button onClick={() => navigate("prop")} className="text-sm px-2 py-1 rounded border border-zinc-700 text-zinc-400">{pending.some((p) => p.state === "ready") ? "TRADE READY · View" : "Waiting for entry · View"}</button>}
         <div className="ml-auto flex items-center gap-2">
           {(!s || (s.quality === "weak" && !s.pinned && !researched)) && <button onClick={a.onQueue} className={primary} title="Move this coin into Needs Research. Free; nothing is researched until you click Research.">Add to Research Queue</button>}
-          {s && !researched && (s.quality !== "weak" || s.pinned) && <button onClick={a.onResearch} disabled={a.researching} className={primary} title="One model call with web search. Nothing runs until you click.">{a.researching ? "Researching…" : "Research"}</button>}
-          {s && researched && rs === "stale" && <button onClick={a.onResearch} disabled={a.researching} className="px-3 py-1.5 rounded bg-amber-300 text-zinc-900 text-sm font-semibold uppercase tracking-wide disabled:opacity-40" title="Conditions changed since the last research. One model call.">{a.researching ? "Researching…" : "Refresh Research"}</button>}
+          {s && !researched && (s.quality !== "weak" || s.pinned) && <button onClick={a.onResearch} disabled={busy} className={primary} title="One model call with bounded web search. Runs on the server; you can leave this page.">{busy ? "Researching…" : "Research"}</button>}
+          {s && researched && rs === "stale" && <button onClick={a.onResearch} disabled={busy} className="px-3 py-1.5 rounded bg-amber-300 text-zinc-900 text-sm font-semibold uppercase tracking-wide disabled:opacity-40" title="Conditions changed since the last research. One model call.">{busy ? "Researching…" : "Refresh Research"}</button>}
           {s && researched && rs !== "stale" && rec === "enter" && <button onClick={a.onBuild} className={primary}>Build Trade</button>}
           {s && researched && rs !== "stale" && rec === "wait" && <button onClick={a.onBuild} className={primary}>View Plan</button>}
           {s && researched && rs !== "stale" && rec === "pass" && <button onClick={a.onDismiss} className={primary}>Dismiss Setup</button>}
-          {s && researched && rs === "aging" && <button onClick={a.onResearch} disabled={a.researching} className={quiet} title="One model call">Refresh</button>}
+          {s && researched && rs === "aging" && <button onClick={a.onResearch} disabled={busy} className={quiet} title="One model call">Refresh</button>}
           <button onClick={a.onTrade} className={quiet} title="Manual ticket: your side, your account, Wick's plan as a starting point">Trade Anyway</button>
           {s && researched && <button onClick={a.onClear} className={quiet} title="Back to NOT RUN. Keeps the setup and all history; spends nothing.">Clear Research</button>}
           {s && !researched && (s.quality !== "weak" || s.pinned) && <button onClick={a.onDismiss} className={quiet} title="Back to Watching">Dismiss</button>}
@@ -229,7 +238,7 @@ function MoverCard({ m, budget, account, a, focused }: { m: Mover; budget: numbe
         <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-sm">
           <div className="rounded bg-zinc-900/60 p-2">
             <Term k="quantSignal" value={s.liveSignal}><div className="text-xs uppercase tracking-wide text-zinc-500 cursor-help">Quant Signal</div></Term>
-            <div className="mt-1 flex items-center gap-2"><Stance s={s.liveSignal} /><span className="text-zinc-300 text-sm">{s.liveSignal === "long" ? "The rules favor a long setup." : s.liveSignal === "short" ? "The rules favor a short setup." : "Not enough evidence to take a side."}</span></div>
+            <div className="mt-1 flex items-center gap-2"><Stance s={s.liveSignal} /><span className="text-zinc-300 text-sm">{s.liveSignal === "flat" ? "No playbook matches right now." : `${m.rules?.playbook ?? "Playbook"} favors a ${s.liveSignal}${m.rules?.entryAction === "wait" ? "; extended, wait for a pullback" : ""}.`}</span></div>
             <div className="text-xs text-zinc-500 mt-0.5">Updates every scan</div>
           </div>
           <div className={`rounded p-2 ${rs === "stale" ? "bg-amber-950/20 border border-amber-800/50" : "bg-zinc-900/60"}`}>
@@ -242,9 +251,10 @@ function MoverCard({ m, budget, account, a, focused }: { m: Mover; budget: numbe
                 <div className={`font-semibold ${rs === "stale" ? "text-amber-300" : rs === "aging" ? "text-zinc-200" : "text-emerald-300"}`}>
                   {rs === "stale" ? `STALE — ${(stale1 ?? "").toUpperCase()}` : rs === "aging" ? "AGING" : "CURRENT"}
                 </div>
-                {r && <div className={rec === "pass" ? "text-red-300" : rec === "wait" ? "text-amber-200" : "text-emerald-300"}>
-                  <span className="font-semibold">{rec === "pass" ? "AVOID FOR NOW" : rec === "wait" ? "WAIT" : "ENTER"}</span> — {rec === "pass" ? "research weakens the trade." : rec === "wait" ? "the idea holds, but not at this price." : "research supports the trade."}
-                  <span className="text-zinc-500"> Thesis {r.thesisVerdict}, {r.confidence} confidence.</span>
+                {r && <div className={r.context === "adverse" ? "text-red-300" : r.context === "supportive" ? "text-emerald-300" : "text-zinc-200"}>
+                  <span className="font-semibold uppercase">{r.context ?? r.thesisVerdict}</span>
+                  {" — "}{stripMd(r.keyReason ?? r.summary)}
+                  <span className="text-zinc-500"> {r.confidence} confidence.</span>
                 </div>}
               </div>
             )}
@@ -252,9 +262,9 @@ function MoverCard({ m, budget, account, a, focused }: { m: Mover; budget: numbe
           <div className="rounded bg-zinc-900/60 p-2">
             <Term k="wickVerdict"><div className="text-xs uppercase tracking-wide text-zinc-500 cursor-help">Wick Verdict</div></Term>
             <div className="mt-1 text-zinc-100">
-              <span className="font-semibold uppercase">{!researched ? "Research first" : rs === "stale" ? "Refresh research" : rec === "enter" ? "Enter" : rec === "wait" ? "Wait" : "Pass"}</span>
+              <span className="font-semibold uppercase">{!researched ? "Research first" : rs === "stale" ? "Refresh research" : rec === "enter" ? `Enter${character === "aggressive" ? " · aggressive" : ""}` : rec === "wait" ? "Wait" : "Pass"}</span>
               {" — "}
-              <span className="text-zinc-300">{!researched ? "the numbers look interesting, but Wick has not checked the news yet." : rs === "stale" ? "conditions changed since Wick last looked; refresh before acting." : rec === "enter" ? "build the trade; the quant setup and the research agree." : rec === "wait" ? "do not enter yet. " + stripMd(r?.mainRisk ?? "") : "do not trade this. " + stripMd(r?.mainRisk ?? "")}</span>
+              <span className="text-zinc-300">{!researched ? "the numbers look interesting, but Wick has not checked the news yet." : rs === "stale" ? "conditions changed since Wick last looked; refresh before acting." : rec === "enter" ? (r?.context === "supportive" ? "build the trade; the playbook and the news agree." : `build the trade on the ${playbook ?? "quant"} setup; nothing in the news argues against it.`) : rec === "wait" ? (s.liveSignal === "flat" ? "the news is interesting but no playbook matches yet; keep watching." : "the idea holds, not at this price. " + stripMd(r?.mainRisk ?? "")) : "do not trade this. " + stripMd(r?.mainRisk ?? "")}</span>
             </div>
           </div>
         </div>
@@ -262,7 +272,8 @@ function MoverCard({ m, budget, account, a, focused }: { m: Mover; budget: numbe
       {r && researched && (
         <div className="rounded bg-zinc-900/40 p-2 text-sm">
           <div className="text-zinc-300">{stripMd(r.summary)}</div>
-          {r.drivers.length > 0 && <div className="text-zinc-500 mt-0.5">{r.drivers.slice(0, 3).map((d, i) => <span key={i}>{stripMd(d.text)}{d.url && <a href={d.url} target="_blank" rel="noreferrer" className="text-sky-400 ml-1">↗</a>}{i < Math.min(3, r.drivers.length) - 1 ? " · " : ""}</span>)}</div>}
+          {r.drivers.length > 0 && <div className="text-zinc-500 mt-0.5">{r.drivers.slice(0, 4).map((d, i) => <span key={i} className={r.catalysts?.[i]?.impact === "negative" ? "text-red-300/80" : r.catalysts?.[i]?.impact === "positive" ? "text-emerald-300/80" : ""}>{stripMd(d.text)}{d.url && <a href={d.url} target="_blank" rel="noreferrer" className="text-sky-400 ml-1">↗</a>}{i < Math.min(4, r.drivers.length) - 1 ? " · " : ""}</span>)}</div>}
+          {r.drivers.length === 0 && <div className="text-zinc-500 mt-0.5">Nothing material found in the last few days. That is neutral, not a reason to skip.</div>}
         </div>
       )}
       <button onClick={() => setOpen((o) => !o)} className="self-start text-[13px] text-zinc-500 hover:text-zinc-300">{open ? "▾ Quant Details" : "▸ Quant Details: shape, judges, flow, slippage, base rates"}</button>
@@ -305,7 +316,7 @@ function Board({ name, s }: { name: string; s: PaperPayload["scoreboard"]["rules
   );
 }
 
-const HOW_WICK_UPDATES = "Market scan: every 15 min, no AI cost. Trade monitoring: every minute, no AI cost. AI research: only when you press Research or Refresh Research. Stale research is labelled, never refreshed on its own.";
+const HOW_WICK_UPDATES = "Quant scan: every 15 minutes and on Scan Now, no AI cost; it checks every tracked coin against six playbooks. A coin enters Needs Research when it matches a playbook or ranks in the top movers, and leaves when that stops. Trade monitoring: every minute. AI research: only when you press Research; it runs on the server and finishes even if you leave the page.";
 
 export default function Analysis({ params }: { params: URLSearchParams }) {
   const focus = params.get("symbol");
@@ -337,6 +348,10 @@ export default function Analysis({ params }: { params: URLSearchParams }) {
   const guard = async (fn: () => Promise<unknown>) => { setError(null); try { await fn(); load(); } catch (e) { setError(String((e as Error).message)); } };
   const research = async (id: number) => { setResearching(id); await guard(() => api.researchSetup(id)); setResearching(null); };
   const run = async (symbol: string) => { setRunning(symbol); await guard(() => api.runAnalysis(symbol)); setRunning(null); };
+  const [scanning, setScanning] = useState(false);
+  const scanNow = async () => { setScanning(true); await guard(() => api.scan()); setScanning(false); };
+  // Research jobs and scans finish on the server; the page just reloads its payload when told.
+  useServerMessages((m) => { if (m.type === "research" || m.type === "scan") load(); }, []);
 
   if (!data) return <div className="p-3 text-[15px] text-zinc-500">{error ?? "Loading…"}</div>;
   const llm = data.llm;
@@ -357,6 +372,13 @@ export default function Analysis({ params }: { params: URLSearchParams }) {
     onRun: () => run(m.symbol), running: running === m.symbol, researching: m.setup?.id === researching,
   });
   const card = (m: Mover) => <MoverCard key={m.symbol} m={m} budget={data.dailyLossBudgetPct} account={data.accountSize} a={actions(m)} focused={m.symbol === focus} />;
+  const warming = (data.warming ?? []).map((sym) => (
+    <section key={`warm-${sym}`} className="rounded border border-sky-800/60 bg-sky-950/10 p-4 flex items-center gap-3">
+      <span className="text-[17px] font-semibold">{sym}</span>
+      <span className="text-sm text-sky-300 animate-pulse">Warming market history…</span>
+      <span className="text-sm text-zinc-500">Downloading candles and running the quant scan. Usually a few seconds.</span>
+    </section>
+  ));
 
   return (
     <div className="p-3 flex flex-col gap-3 max-w-6xl">
@@ -364,9 +386,12 @@ export default function Analysis({ params }: { params: URLSearchParams }) {
         <span className="text-[13px] uppercase tracking-wide text-zinc-500">Analysis</span>
         <span className="num"><span className="font-semibold text-zinc-100">{needs.length}</span> need research · <span className="font-semibold text-emerald-300">{researched.length - stale}</span> researched{stale > 0 && <> · <span className="font-semibold text-amber-300">{stale}</span> stale</>}</span>
         {attention > 0 && <button onClick={() => navigate("prop")} className="text-amber-300 hover:underline">{attention} open {attention === 1 ? "position needs" : "positions need"} attention →</button>}
-        <span className="text-sm text-zinc-500" title={HOW_WICK_UPDATES}>Scan {data.lastScan ? fmtTime(data.lastScan) : "pending"} · every {data.scanIntervalS / 60} min · free <span className="text-zinc-400">ⓘ</span></span>
-        <button onClick={() => setUsageOpen((o) => !o)} className={`text-sm num hover:underline ${llm.error ? "text-amber-400" : "text-zinc-500"}`} title={llm.error ?? `${llm.configured ? llm.model : "model off"} · cap ${llm.dailyCap}/day`}>
-          AI Research · {llm.usage.calls} calls today · ~${llm.usage.estCostUsd.toFixed(2)}
+        <span className="text-sm text-zinc-500 num" title={HOW_WICK_UPDATES}>
+          Last scan {data.lastScan ? fmtClock(data.lastScan) : "pending"} · next {data.nextScan ? fmtClock(data.nextScan) : "–"} · {data.scanStats?.checked ?? 0} markets checked · {data.scanStats?.interesting ?? 0} match a playbook · free <span className="text-zinc-400">ⓘ</span>
+        </span>
+        <button onClick={scanNow} disabled={scanning} className="text-sm px-2 py-0.5 rounded border border-zinc-800 text-zinc-400 hover:text-zinc-200 disabled:opacity-50" title="Re-run the quant scan on every tracked coin now. Free.">{scanning ? "Scanning…" : "Scan Now"}</button>
+        <button onClick={() => setUsageOpen((o) => !o)} className={`text-sm num hover:underline ${llm.error ? "text-amber-400" : "text-zinc-500"}`} title={llm.error ?? `${llm.configured ? llm.model : "model off"}`}>
+          AI Research · {(data.research?.running ?? 0) > 0 || (data.research?.queued ?? 0) > 0 ? `${data.research.running} running · ${data.research.queued} queued · ` : ""}{llm.usage.calls} calls today · ~${llm.usage.estCostUsd.toFixed(2)}
         </button>
         {error && <span className="text-red-400 text-sm">{error}</span>}
         <div className="ml-auto relative" ref={menuRef}>
@@ -407,7 +432,8 @@ export default function Analysis({ params }: { params: URLSearchParams }) {
           </button>
         ))}
       </div>
-      {tab === "needs" && needs.length === 0 && <div className="text-sm text-zinc-500">Nothing new. The scanner adds coins here when their setup is strong or mixed, or when you add one from Watching.</div>}
+      {warming}
+      {tab === "needs" && needs.length === 0 && <div className="text-sm text-zinc-500">Nothing new. Every scan (each 15 minutes, or Scan Now) adds a coin here when it matches a playbook or ranks in the top movers; it leaves when that stops being true, or when you dismiss or research it.</div>}
       {tab === "needs" && needs.map(card)}
       {tab === "researched" && researched.length === 0 && <div className="text-sm text-zinc-500">No research yet. Click Research on a setup in Needs Research; one model call, cached until you clear or refresh it.</div>}
       {tab === "researched" && researched.map(card)}

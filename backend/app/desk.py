@@ -20,6 +20,7 @@ from . import config
 from .flow import slippage_table
 from .indicators import atr, sma
 from .planner import PLANNER_VERSION, RISK_PROFILES, build_plan, size_for
+from .scanner import PLAYBOOK_MAX_RISK_PCT
 from .shape import SQRT24
 from .store import Store
 from .timeutil import now_ms
@@ -67,11 +68,12 @@ class Desk:
             if sym not in top and rules.get("stance", "flat") == "flat" and sym not in active:
                 continue
             quality, concern = quality_of(rules)
-            bias = {"up": "long", "down": "short"}.get(rules.get("trend"), "neutral")
+            bias = rules["stance"] if rules.get("stance") in ("long", "short") else {"up": "long", "down": "short"}.get(rules.get("trend"), "neutral")
             shape = self.analysis.shapes.get(sym) or {}
             payload = {"features": m["features"], "score": m["score"], "checks": rules.get("checks", []),
                        "shape": shape.get("label"), "shapeName": shape.get("name"),
-                       "mfe48h": shape.get("mfe48h"), "rulesStance": rules.get("stance")}
+                       "mfe48h": shape.get("mfe48h"), "rulesStance": rules.get("stance"),
+                       "playbook": rules.get("playbook"), "riskCharacter": rules.get("riskCharacter")}
             if sym in active:
                 s = active[sym]
                 await self.store.update("setups", s["id"], {"quality": quality, "concern": concern, "updated_at": now,
@@ -134,18 +136,30 @@ class Desk:
         await self.analysis.scan()
 
     async def _attach_research(self, s: dict, a: dict):
-        rec = "pass" if a["stance"] == "flat" else a.get("action", "enter")
+        rec = a.get("action") or ("pass" if a["stance"] == "flat" else "enter")
         bias = a["stance"] if a["stance"] != "flat" else s["bias"]
         await self.store.update("setups", s["id"], {
             "state": "researched", "recommendation": rec, "bias": bias, "updated_at": now_ms(),
             "payload": {**s["payload"], "research": {k: a.get(k) for k in ("time", "summary", "thesisVerdict", "mainRisk", "confidence",
                                                                             "trend", "horizonH", "invalidation", "drivers", "risks", "model",
-                                                                            "price", "trigger", "shapeAtResearch", "rulesStanceAtResearch", "action")}}})
+                                                                            "price", "trigger", "shapeAtResearch", "rulesStanceAtResearch", "action",
+                                                                            "context", "actionModifier", "keyReason", "catalysts")}}})
 
-    async def research(self, setup_id: int) -> dict:
+    async def attach_research_symbol(self, symbol: str, a: dict):
+        """A finished research job attaches to whatever active setup the symbol has now."""
+        s = (await self.active_setups()).get(symbol)
+        if s:
+            await self._attach_research(s, a)
+
+    async def research(self, setup_id: int, wait: bool = False) -> dict:
+        """Start research for a setup. Returns at once with the job attached; the setup flips to
+        RESEARCHED when the job lands. `wait=True` runs it inline (tests, and judges without jobs)."""
         s = await self.store.row("setups", setup_id)
         if not s:
             raise KeyError("setup not found")
+        if not wait and hasattr(self.analysis, "start_research"):
+            job = self.analysis.start_research(s["symbol"])
+            return {**s, "researchJob": job}
         a = await self.analysis.maybe_research(s["symbol"], force=True)
         if a is None:
             raise RuntimeError(self.analysis.judge.status.get("error") or "model judge unavailable")
@@ -195,9 +209,17 @@ class Desk:
             plan = build_plan(mk["h1"], side, action, mk["price"], mk["unit"], mk["ma20"], shape, mfe_map.get(side), slip)
         else:
             plan = self._fallback_plan(symbol, side, mk["price"])
-        sizing = size_for(plan, acct["equity"], RISK_PROFILES[risk_profile], acct["openRiskUsd"], acct["dailyLossRemainingUsd"])
+        # Aggressive playbooks cap the risk per trade whatever profile was picked: their failures are fast.
+        rules = self.analysis.rules.get(symbol) or {}
+        playbook = (setup or {}).get("payload", {}).get("playbook") or rules.get("playbook")
+        character = (setup or {}).get("payload", {}).get("riskCharacter") or rules.get("riskCharacter")
+        cap = PLAYBOOK_MAX_RISK_PCT.get(character) if character else None
+        risk_pct = min(RISK_PROFILES[risk_profile], cap) if cap else RISK_PROFILES[risk_profile]
+        risk_note = f"{playbook} is an {character} playbook: risk capped at {cap}% of equity." if cap and cap < RISK_PROFILES[risk_profile] else None
+        sizing = size_for(plan, acct["equity"], risk_pct, acct["openRiskUsd"], acct["dailyLossRemainingUsd"])
         return {"setup": setup, "symbol": symbol, "plan": plan.to_wire(), "sizing": sizing, "account": acct,
                 "riskProfiles": RISK_PROFILES, "advisory": plan.recommendation == "pass",
+                "playbook": playbook, "riskCharacter": character, "riskCapPct": cap, "riskNote": risk_note,
                 "researched": bool(setup) and setup["state"] == "researched", "manual": setup is None}
 
     async def plan(self, setup_id: int, account_id: int, risk_profile: str) -> dict:

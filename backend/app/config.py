@@ -70,6 +70,7 @@ RETENTION_INTERVAL_S = 6 * 3600
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 OPENAI_MODEL = "gpt-5.6-luna"        # verified against /v1/models at boot; change if the API rejects it
 OPENAI_BASE = "https://api.openai.com"
+RESEARCH_CONCURRENCY = 4              # model calls in flight at once; further clicks queue
 LLM_RESEARCH_TTL_S = 12 * 3600       # if AUTO_RESEARCH is on: no auto re-research sooner than this
 AUTO_RESEARCH = False                # OFF: the model is only called when you click RESEARCH / REFRESH RESEARCH.
                                      # Scanning, rules, shapes and setups are local and free and keep running.
