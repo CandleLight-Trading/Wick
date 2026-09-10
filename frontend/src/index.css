@@ -7,3 +7,8 @@ html[data-density="compact"] { font-size: 13px; }
 html, body, #root { height: 100%; }
 body { font-family: ui-sans-serif, system-ui, sans-serif; line-height: 1.45; }
 .num { font-variant-numeric: tabular-nums; }
+
+/* Screen changes fade in over 160 ms with a 4 px rise: instant to the hand, smooth to the eye. */
+@keyframes screen-enter { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.screen-enter { animation: screen-enter 160ms ease-out both; }
+@media (prefers-reduced-motion: reduce) { .screen-enter { animation: none; } }

@@ -113,11 +113,14 @@ export default function App() {
         </div>
       </header>
       <main className="flex-1 min-h-0 overflow-auto">
-        {route.screen === "charts" && <Charts params={route.params} />}
-        {route.screen === "market" && <Market />}
-        {route.screen === "context" && <Context params={route.params} />}
-        {route.screen === "analysis" && <Analysis params={route.params} />}
-        {route.screen === "prop" && <Prop />}
+        {/* A fresh keyed wrapper per screen replays a 160 ms fade, so switching feels settled, not swapped. */}
+        <div key={route.screen} className="screen-enter h-full">
+          {route.screen === "charts" && <Charts params={route.params} />}
+          {route.screen === "market" && <Market />}
+          {route.screen === "context" && <Context params={route.params} />}
+          {route.screen === "analysis" && <Analysis params={route.params} />}
+          {route.screen === "prop" && <Prop />}
+        </div>
       </main>
     </div>
   );
