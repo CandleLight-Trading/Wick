@@ -70,6 +70,16 @@ symbols with open or pending trades are never pruned; equity snapshots older tha
 thin to five-minute spacing. Backups: the DB is a single file; snapshot the volume, or
 copy `/data/market.db` while the SQLite WAL is checkpointed (a script is planned).
 
+## Accounts (Clerk)
+
+Without Clerk variables Wick runs on the shared password (or open, in dev). To turn on
+accounts, set on the backend: `CLERK_SECRET_KEY`, `CLERK_AUTHORIZED_PARTIES`
+(comma-separated origins, default `https://app.candlelit.us,http://localhost:5173`), and
+`CLERK_JASON_USER_ID` (the Clerk id that inherits pre-account data and is active by
+default). Bake `VITE_CLERK_PUBLISHABLE_KEY` into the frontend at build time (Railway: a
+build variable; locally: `frontend/.env.local`). New sign-ups are `invited` until their
+`users.access_status` is set to `active`.
+
 ## Tests
 
 ```bash

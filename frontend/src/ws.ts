@@ -20,9 +20,14 @@ class WsClient {
   lastStatus: Status | null = null;
   lastMessageAt = 0;
 
-  connect() {
+  /** Clerk mode: App sets this before connecting; the token rides in the query string because
+   *  browsers cannot set headers on a socket. Password/dev mode: null, cookie does the job. */
+  tokenProvider: (() => Promise<string | null>) | null = null;
+
+  async connect() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    const token = this.tokenProvider ? await this.tokenProvider() : null;
+    const ws = new WebSocket(`${proto}://${location.host}/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`);
     this.ws = ws;
     ws.onopen = () => {
       this.socketOpen = true;
@@ -100,7 +105,8 @@ class WsClient {
 }
 
 export const wsClient = new WsClient();
-wsClient.connect();
+// Password/dev mode connects at once. Clerk mode waits for App to hand over the token getter.
+if (!import.meta.env.VITE_CLERK_PUBLISHABLE_KEY) wsClient.connect();
 
 /** Subscribe a callback to every server message for the lifetime of the component. */
 export function useServerMessages(handler: Listener, deps: unknown[]) {

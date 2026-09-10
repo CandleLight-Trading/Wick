@@ -190,13 +190,15 @@ class AnalysisService:
             self.broadcaster.publish_all({"type": "scan", "lastScan": now // 1000})
 
     # ---- research jobs -----------------------------------------------------------
-    def start_research(self, symbol: str, trigger: str = "manual") -> dict:
+    def start_research(self, symbol: str, user_id: int | None = None, trigger: str = "manual") -> dict:
         """Click -> job. Returns at once; the call runs on the server whatever the browser does.
-        A second click on a running symbol returns the same job."""
-        job = self.jobs.get(symbol)
+        Jobs are per user and symbol: a second click on a running one returns the same job."""
+        key = f"{user_id}:{symbol}"
+        job = self.jobs.get(key)
         if job and job["state"] in ("queued", "running"):
             return job
-        job = self.jobs[symbol] = {"symbol": symbol, "state": "queued", "startedAt": now_ms(), "finishedAt": None, "error": None, "trigger": trigger}
+        job = self.jobs[key] = {"symbol": symbol, "userId": user_id, "state": "queued", "startedAt": now_ms(), "finishedAt": None,
+                                "error": None, "trigger": trigger}
         asyncio.create_task(self._run_job(job))
         return job
 
@@ -207,11 +209,9 @@ class AnalysisService:
             job["state"] = "running"
             self._push_job(job)
             try:
-                row = await self.maybe_research(sym, force=True, trigger=job["trigger"], raise_errors=True)
+                row = await self.maybe_research(sym, force=True, trigger=job["trigger"], raise_errors=True, user_id=job["userId"])
                 if row is None:
                     raise RuntimeError(self.judge.status.get("error") or "model judge unavailable")
-                if self.desk:
-                    await self.desk.attach_research_symbol(sym, row)
                 job["state"] = "done"
             except Exception as e:
                 job["state"], job["error"] = "failed", str(e)[:300]
@@ -220,20 +220,24 @@ class AnalysisService:
         self._push_job(job)
 
     def _push_job(self, job: dict):
-        if self.broadcaster:
-            self.broadcaster.publish_all({"type": "research", **{k: v for k, v in job.items()}})
+        if self.broadcaster:      # private: only this user's sockets hear about their research
+            self.broadcaster.publish_user(job["userId"], {"type": "research", **{k: v for k, v in job.items() if k != "userId"}})
 
-    def jobs_summary(self) -> dict:
-        states = [j["state"] for j in self.jobs.values()]
+    def jobs_for(self, user_id: int | None) -> dict[str, dict]:
+        return {j["symbol"]: j for j in self.jobs.values() if j["userId"] == user_id}
+
+    def jobs_summary(self, user_id: int | None = None) -> dict:
+        states = [j["state"] for j in self.jobs.values() if j["userId"] == user_id]
         return {"running": states.count("running"), "queued": states.count("queued")}
 
     # ---- model judge ------------------------------------------------------------
-    async def maybe_research(self, symbol: str, force: bool, trigger: str = "manual", raise_errors: bool = False) -> dict | None:
+    async def maybe_research(self, symbol: str, force: bool, trigger: str = "manual", raise_errors: bool = False,
+                             user_id: int | None = None) -> dict | None:
         """Model call for one symbol, if fresh enough analysis is missing and budget allows.
         `trigger` is recorded on the row so the usage log says who spent the call."""
         if not self.judge.status.get("configured"):
             return None
-        latest = await self.store.latest_analysis(symbol)
+        latest = await self.store.latest_analysis(symbol, user_id)
         if not force and latest and now_ms() - latest["time"] < config.LLM_RESEARCH_TTL_S * 1000:
             return latest
         # No daily cap: every call is a click. Calls are counted, not limited.
@@ -252,6 +256,7 @@ class AnalysisService:
         finally:
             self._in_flight.discard(symbol)
         row = self.compose_row(symbol, f, answer, trigger)
+        row["userId"] = user_id
         await self.store.insert_analysis(row)
         await self._log_if_changed(symbol, "model", row["stance"], row["horizonH"], row["invalidation"], f, row["time"])
         log.info("model judge %s: %s (%s), %s", symbol, row["stance"], row["confidence"], row["summary"][:80])
@@ -387,10 +392,10 @@ class AnalysisService:
                 "researchState": research_state, "researchAgeS": age_s, "staleReasons": reasons, "pinned": bool(p.get("pinned")),
                 "researchTrigger": (r or {}).get("trigger"), "liveSignal": (self.rules.get(sym) or {}).get("stance", "flat")}
 
-    async def llm_usage(self) -> dict:
-        """Today's model calls with token counts and an estimated cost, newest first."""
+    async def llm_usage(self, user_id: int | None = None) -> dict:
+        """Today's model calls for this user with token counts and an estimated cost, newest first."""
         day_start = (now_ms() // 86_400_000) * 86_400_000
-        rows = await self.store.rows("analyses", "time >= ?", (day_start,), order="time DESC")
+        rows = await self.store.rows("analyses", "time >= ? AND user_id IS ?", (day_start, user_id), order="time DESC")
         calls = []
         for a in rows:
             u = a["payload"].get("usage") or {}
@@ -402,28 +407,31 @@ class AnalysisService:
                 "autoResearch": config.AUTO_RESEARCH}
 
     # ---- payload for the tab -------------------------------------------------------
-    async def payload(self) -> dict:
-        analyses = {a["symbol"]: a for a in await self.store.latest_analyses()}
-        setups = await self.desk.active_setups() if self.desk else {}
+    async def payload(self, user_id: int | None = None) -> dict:
+        """The Analysis tab for one user: shared scanner output, plus that user's research,
+        positions and usage. Nothing private of anyone else's is in here."""
+        analyses = {a["symbol"]: a for a in await self.store.latest_analyses(user_id)}
+        setups = {sym: await self.desk.setup_for_user(s, user_id) for sym, s in (await self.desk.active_setups()).items()} if self.desk else {}
+        jobs = self.jobs_for(user_id)
         held = {}
         if self.desk:
-            for t in await self.store.rows("trades", "state IN ('waiting','ready','open')"):
+            for t in await self.desk.trades_for_user(user_id, "state IN ('waiting','ready','open')"):
                 held.setdefault(t["symbol"], []).append({"tradeId": t["id"], "accountId": t["account_id"], "state": t["state"],
                                                           "side": t["side"], "status": t["status"],
                                                           "unrealizedUsd": self.desk._unrealized(t) if t["state"] == "open" else None,
                                                           "unrealizedR": (self.desk._unrealized(t) / t["risk_usd"]) if t["state"] == "open" and t["risk_usd"] else None})
         return {
-            "desk": await self.desk.briefing() if self.desk else None,
+            "desk": await self.desk.briefing(user_id) if self.desk else None,
             "lastScan": self.last_scan_ms // 1000, "scanIntervalS": config.SCAN_INTERVAL_S,
             "nextScan": (self.last_scan_ms // 1000 + config.SCAN_INTERVAL_S) if self.last_scan_ms else None,
-            "scanStats": self.scan_stats, "research": self.jobs_summary(),
+            "scanStats": self.scan_stats, "research": self.jobs_summary(user_id),
             "warming": sorted(s for s in self.warming if s not in self.features),
-            "llm": {**self.judge.status, "callsToday": await self.store.analyses_today(), "dailyCap": None,
-                    "topMovers": config.TOP_MOVERS, "ttlH": config.LLM_RESEARCH_TTL_S // 3600, "usage": await self.llm_usage()},
+            "llm": {**self.judge.status, "callsToday": await self.store.analyses_today(user_id), "dailyCap": None,
+                    "topMovers": config.TOP_MOVERS, "ttlH": config.LLM_RESEARCH_TTL_S // 3600, "usage": await self.llm_usage(user_id)},
             "movers": [{**m, "rules": self.rules.get(m["symbol"]), "model": analyses.get(m["symbol"]),
                         "shape": self.shapes.get(m["symbol"]), "slippage": self.slippage.get(m["symbol"]),
                         "setup": self._setup_wire(setups.get(m["symbol"])), "held": held.get(m["symbol"], []),
-                        "researchJob": self.jobs.get(m["symbol"])} for m in self.movers],
+                        "researchJob": jobs.get(m["symbol"])} for m in self.movers],
             "breadth": self.breadth, "tracker": await self._tracker(), "dvol": self.store.dvol,
             "alerts": {**(self.alerts.status() if self.alerts else {"configured": False}), "recent": list(self.alerts.recent)[:30] if self.alerts else []},
             "dailyLossBudgetPct": config.DAILY_LOSS_BUDGET_PCT, "accountSize": config.ACCOUNT_SIZE_USD,

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { api, UNAUTHORIZED } from "./api";
+import { api, CLERK_KEY, setTokenProvider, UNAUTHORIZED } from "./api";
+import { RedirectToSignIn, SignOutButton, UserButton, useAuth } from "@clerk/react";
 import { useLocalStorage } from "./store";
 import { useConnectionStatus, wsClient } from "./ws";
 import StatusBadge from "./components/StatusBadge";
@@ -66,10 +67,48 @@ function SyncBanner() {
   );
 }
 
+/** Clerk mode wrapper: hands the session token to api/ws, redirects signed-out visitors to the
+ *  hosted sign-in page (accounts.candlelit.us in production), and holds the beta gate. */
+function ClerkGate({ children }: { children: React.ReactNode }) {
+  const { isLoaded, isSignedIn, getToken } = useAuth();
+  const [access, setAccess] = useState<{ status: string | null; message?: string } | null>(null);
+  useEffect(() => {
+    if (!isSignedIn) return;
+    const provider = () => getToken();
+    setTokenProvider(provider);
+    wsClient.tokenProvider = provider;
+    wsClient.connect();
+    api.auth().then((a) => setAccess({ status: a.accessStatus, message: a.betaMessage })).catch(() => setAccess({ status: null }));
+  }, [isSignedIn, getToken]);
+  if (!isLoaded) return <div className="h-full flex items-center justify-center text-zinc-500">Loading…</div>;
+  if (!isSignedIn) return <RedirectToSignIn redirectUrl={location.href} />;
+  if (access && access.status !== "active") {
+    return (
+      <div className="h-full flex items-center justify-center p-6">
+        <div className="max-w-md text-center space-y-4">
+          <div className="text-xs uppercase tracking-[0.3em] text-zinc-500">Wick</div>
+          <div className="text-2xl font-semibold">Private beta</div>
+          <p className="text-zinc-400">{access.message ?? "Wick is currently in private beta. Access for this account has not been enabled yet."}</p>
+          <p className="text-sm text-zinc-500">Write to <a className="underline" href="mailto:tradingcandlelight@gmail.com">tradingcandlelight@gmail.com</a> to request access.</p>
+          <SignOutButton><button className="text-sm text-zinc-400 hover:text-zinc-200 border border-zinc-800 rounded px-3 py-1">Sign out</button></SignOutButton>
+        </div>
+      </div>
+    );
+  }
+  if (!access) return <div className="h-full flex items-center justify-center text-zinc-500">Loading…</div>;
+  return <>{children}</>;
+}
+
 export default function App() {
+  if (CLERK_KEY) return <ClerkGate><Shell /></ClerkGate>;
+  return <Shell />;
+}
+
+function Shell() {
   const [route, setRoute] = useState(parseHash);
   const [needLogin, setNeedLogin] = useState(false);
   useEffect(() => {
+    if (CLERK_KEY) return;                        // Clerk mode: the gate above owns sign-in
     api.auth().then((a) => setNeedLogin(a.enabled && !a.loggedIn)).catch(() => {});
     const onUnauthorized = () => setNeedLogin(true);
     window.addEventListener(UNAUTHORIZED, onUnauthorized);
@@ -110,6 +149,7 @@ export default function App() {
           <button onClick={() => setDensity((d) => (d === "compact" ? "comfortable" : "compact"))} className="text-xs text-zinc-500 hover:text-zinc-300 border border-zinc-800 rounded px-2 py-0.5" title="Text density">
             {density === "compact" ? "Compact" : "Comfortable"}
           </button>
+          {CLERK_KEY && <UserButton />}
         </div>
       </header>
       <main className="flex-1 min-h-0 overflow-auto">

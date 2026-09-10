@@ -2,15 +2,25 @@ import type { ChartStructure, ResearchJob, Account, AnalysisPayload, ClosePrevie
 
 /** A 401 anywhere means the session is gone: the app shows the login screen. */
 export const UNAUTHORIZED = "wick:unauthorized";
+/** Set at build time. With it Wick runs on Clerk accounts; without it, the shared password or open dev mode. */
+export const CLERK_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string | undefined;
 
 /** Last response per URL, kept for the life of the page. Screens render it at once when
  * they mount and refresh from the network behind it, so switching tabs never shows "Loading…"
  * for data that was on screen a moment ago. */
 const cache = new Map<string, unknown>();
+
+/** Clerk mode: App registers a getter for the session token; every request carries it. */
+let tokenProvider: (() => Promise<string | null>) | null = null;
+export const setTokenProvider = (fn: (() => Promise<string | null>) | null) => { tokenProvider = fn; };
+async function authHeaders(): Promise<Record<string, string>> {
+  const t = tokenProvider ? await tokenProvider() : null;
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
 export const peek = <T,>(url: string): T | undefined => cache.get(url) as T | undefined;
 
 async function get<T>(url: string): Promise<T> {
-  const r = await fetch(url);
+  const r = await fetch(url, { headers: await authHeaders() });
   if (r.status === 401) window.dispatchEvent(new Event(UNAUTHORIZED));
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   const data = (await r.json()) as T;
@@ -19,7 +29,7 @@ async function get<T>(url: string): Promise<T> {
 }
 
 export const api = {
-  auth: () => get<{ enabled: boolean; loggedIn: boolean }>("/api/auth"),
+  auth: () => get<{ enabled: boolean; mode: "clerk" | "password"; loggedIn: boolean; accessStatus: string | null; betaMessage?: string }>("/api/auth"),
   login: (password: string) => post<{ ok: boolean }>("/api/login", { password }),
   logout: (everywhere = false) => post<{ ok: boolean }>(`/api/logout?everywhere=${everywhere}`),
   symbols: () => get<SymbolInfo[]>("/api/symbols"),
@@ -27,7 +37,7 @@ export const api = {
   setTracked: async (symbols: string[]) => {
     const r = await fetch("/api/tracked", {
       method: "PUT",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(await authHeaders()) },
       body: JSON.stringify({ symbols }),
     });
     if (!r.ok) throw new Error(await r.text());
@@ -79,7 +89,7 @@ async function post<T = unknown>(url: string, body?: unknown): Promise<T> {
 }
 
 async function send<T = unknown>(method: string, url: string, body?: unknown): Promise<T> {
-  const r = await fetch(url, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+  const r = await fetch(url, { method, headers: { "content-type": "application/json", ...(await authHeaders()) }, body: body ? JSON.stringify(body) : undefined });
   if (r.status === 401 && !url.endsWith("/api/login")) window.dispatchEvent(new Event(UNAUTHORIZED));
   if (!r.ok) {
     let msg = await r.text();

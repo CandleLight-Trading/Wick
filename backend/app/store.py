@@ -64,6 +64,13 @@ CREATE TABLE IF NOT EXISTS setups(
 );
 CREATE INDEX IF NOT EXISTS setups_symbol_state ON setups(symbol, state);
 
+-- One row per person. Clerk owns identity; this row owns everything private in Wick.
+-- access_status: invited | active | suspended. Only active users enter the terminal.
+CREATE TABLE IF NOT EXISTS users(
+    id INTEGER PRIMARY KEY, clerk_user_id TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL, access_status TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS accounts(
     id INTEGER PRIMARY KEY, name TEXT NOT NULL, size REAL NOT NULL, daily_loss_pct REAL NOT NULL,
     max_dd_pct REAL NOT NULL, target_pct REAL NOT NULL, created_at INTEGER NOT NULL
@@ -147,6 +154,9 @@ class Store:
     MIGRATIONS = [
         (1, "candles.tb: taker-buy volume", "ALTER TABLE candles ADD COLUMN tb REAL"),
         (2, "trades.notes: journal per trade", "ALTER TABLE trades ADD COLUMN notes TEXT"),
+        (3, "accounts.user_id: who owns the account", "ALTER TABLE accounts ADD COLUMN user_id INTEGER"),
+        (4, "analyses.user_id: who asked for the research", "ALTER TABLE analyses ADD COLUMN user_id INTEGER"),
+        (5, "analyses.cleared: Clear Research keeps the usage log", "ALTER TABLE analyses ADD COLUMN cleared INTEGER NOT NULL DEFAULT 0"),
     ]
 
     async def _migrate(self):
@@ -335,28 +345,65 @@ class Store:
     # ---- analyses (model judge) ----------------------------------------------
     async def insert_analysis(self, row: dict):
         await self._db.execute(
-            "INSERT INTO analyses(symbol, time, model, stance, confidence, horizon_h, invalidation, trend, summary, price, payload) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO analyses(symbol, time, model, stance, confidence, horizon_h, invalidation, trend, summary, price, payload, user_id) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (row["symbol"], row["time"], row["model"], row["stance"], row["confidence"], row["horizonH"],
-             row["invalidation"], row["trend"], row["summary"], row["price"], json.dumps(row)),
+             row["invalidation"], row["trend"], row["summary"], row["price"], json.dumps(row), row.get("userId")),
         )
         await self._db.commit()
 
-    async def latest_analysis(self, symbol: str) -> dict | None:
-        async with self._db.execute("SELECT payload FROM analyses WHERE symbol=? ORDER BY time DESC LIMIT 1", (symbol,)) as cur:
+    # Research is per user: what you asked for is yours, and Clear Research hides it from you
+    # without touching the usage log.
+    async def latest_analysis(self, symbol: str, user_id: int | None = None) -> dict | None:
+        async with self._db.execute("SELECT payload FROM analyses WHERE symbol=? AND user_id IS ? AND cleared=0 ORDER BY time DESC LIMIT 1",
+                                    (symbol, user_id)) as cur:
             row = await cur.fetchone()
         return json.loads(row[0]) if row else None
 
-    async def latest_analyses(self) -> list[dict]:
+    async def latest_analyses(self, user_id: int | None = None) -> list[dict]:
         async with self._db.execute(
-            "SELECT payload FROM analyses a WHERE time = (SELECT MAX(time) FROM analyses b WHERE b.symbol = a.symbol)"
+            "SELECT payload FROM analyses a WHERE user_id IS ? AND cleared=0 AND time = "
+            "(SELECT MAX(time) FROM analyses b WHERE b.symbol = a.symbol AND b.user_id IS ? AND b.cleared=0)", (user_id, user_id)
         ) as cur:
             return [json.loads(r[0]) for r in await cur.fetchall()]
 
-    async def analyses_today(self) -> int:
+    async def clear_analyses(self, user_id: int | None, symbol: str | None = None):
+        sql, params = "UPDATE analyses SET cleared=1 WHERE user_id IS ?", (user_id,)
+        if symbol:
+            sql, params = sql + " AND symbol=?", params + (symbol,)
+        await self._db.execute(sql, params)
+        await self._db.commit()
+
+    async def analyses_today(self, user_id: int | None = None) -> int:
         day_start = (now_ms() // 86_400_000) * 86_400_000
-        async with self._db.execute("SELECT COUNT(*) FROM analyses WHERE time >= ?", (day_start,)) as cur:
+        async with self._db.execute("SELECT COUNT(*) FROM analyses WHERE time >= ? AND user_id IS ?", (day_start, user_id)) as cur:
             return (await cur.fetchone())[0]
+
+    # ---- users -----------------------------------------------------------------
+    async def user_by_clerk(self, clerk_user_id: str) -> dict | None:
+        rows = await self.rows("users", "clerk_user_id=?", (clerk_user_id,), limit=1)
+        return rows[0] if rows else None
+
+    async def get_or_create_user(self, clerk_user_id: str, active: bool) -> tuple[dict, bool]:
+        """Idempotent provisioning. Returns (user, created). New users are invited unless
+        `active` says the caller already vouched for them (Jason, or local dev)."""
+        u = await self.user_by_clerk(clerk_user_id)
+        if u:
+            return u, False
+        now = now_ms()
+        uid = await self.insert("users", {"clerk_user_id": clerk_user_id, "created_at": now, "updated_at": now,
+                                          "access_status": "active" if active else "invited"})
+        return await self.row("users", uid), True
+
+    async def assign_legacy(self, user_id: int) -> dict:
+        """One-time: rows created before users existed (user_id NULL) belong to this user.
+        Only NULL rows are touched, so re-running is harmless and never moves anyone's data."""
+        out = {}
+        for table in ("accounts", "analyses"):
+            cur = await self._db.execute(f"UPDATE {table} SET user_id=? WHERE user_id IS NULL", (user_id,))
+            out[table] = cur.rowcount or 0
+        await self._db.commit()
+        return out
 
     # ---- recommendation log / paper positions ----------------------------------
     async def insert_recommendation(self, symbol, source, time, stance, horizon_h, entry, invalidation, funding_rate):

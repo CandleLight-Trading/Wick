@@ -106,16 +106,29 @@ class Auth:
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, auth: Auth):
+    """Two modes. With Clerk configured, every /api request (except the public paths) needs a
+    valid Clerk session and its `sub` is stashed on request.state for the route to map to a
+    Wick user. Otherwise the shared-password session applies, as before."""
+
+    def __init__(self, app, auth: Auth, clerk=None):
         super().__init__(app)
         self.auth = auth
+        self.clerk = clerk
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if not self.auth.enabled or not path.startswith("/api") or path.startswith(PUBLIC_PATHS):
+        if not path.startswith("/api") or path.startswith(PUBLIC_PATHS):
             return await call_next(request)
-        if not self.auth.session_ok(request):
-            return JSONResponse({"detail": "login required"}, status_code=401)
+        if self.clerk is not None and self.clerk.enabled:
+            claims = await self.clerk.verify(self.clerk.token_from(request.headers, request.cookies))
+            if not claims:
+                return JSONResponse({"detail": "login required"}, status_code=401)
+            request.state.clerk_sub = claims["sub"]
+        elif self.auth.enabled:
+            if not self.auth.session_ok(request):
+                return JSONResponse({"detail": "login required"}, status_code=401)
+        else:
+            return await call_next(request)
         if request.method in ("POST", "PUT", "PATCH", "DELETE") and not Auth.same_origin(request.headers, request.headers.get("host", "")):
             return JSONResponse({"detail": "cross-origin request refused"}, status_code=403)
         return await call_next(request)

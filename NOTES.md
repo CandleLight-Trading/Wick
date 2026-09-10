@@ -611,6 +611,40 @@ Some labels carry both words: "Planned loss · 1R", "Reward / risk · R:R",
   closed bar, at most every 30 s. Observation only; the panel says so.
 - Operational status-bar numbers (weight, reconnects, kraken, perps) now say what they are.
 
+## Phase 9: accounts (Clerk identity, Wick ownership)
+
+One password became many people. Clerk owns identity; Wick owns every private row.
+
+- **Verification** (`clerk.py`): the session JWT (Authorization: Bearer, or Clerk's
+  `__session` cookie on the root domain) is verified networklessly against Clerk's JWKS,
+  fetched once with the secret key and refreshed only on an unknown key id. Expiry and the
+  authorized party (`azp`) are checked. Only `sub` is used, and only to look up the local
+  user. Without CLERK_SECRET_KEY the class is disabled and the shared password applies, so
+  dev is unchanged. The websocket carries the token in the query string (browsers cannot
+  set headers on sockets) and refuses non-active users.
+- **Users** (`users` table): clerk_user_id, access_status invited | active | suspended.
+  `current_user()` in api.py maps sub -> row, creates it on first sight (Jason's Clerk id is
+  active by default, everyone else invited), gives a new user one $25K starter account, and
+  403s with the beta message unless active. Without Clerk everyone is the single "local"
+  user, so ownership checks are identical in both modes.
+- **Ownership**: accounts carry user_id; trades and equity follow their account. Every
+  account and trade route goes through own_account / own_trade, which answer 404, not 403:
+  other people's rows do not exist to you. Research (`analyses`) carries user_id: research
+  is yours, on shared scanner setups. `Desk.setup_for_user` merges a setup with the caller's
+  own latest analysis, so one person's research never reads as RESEARCHED for another.
+  Clear Research flips `cleared` on the user's rows and keeps the usage log. Research jobs
+  are keyed by user and symbol and their events go only to that user's sockets
+  (`publish_user`). Market data, scanner, setups, candles, order books stay global; there is
+  one worker.
+- **Migration**: numbered migrations 3-5 add the columns. At boot, rows with user_id NULL go
+  to Jason's Clerk user (CLERK_JASON_USER_ID) when Clerk is on, or to "local" when it is off.
+  Only NULL rows move, so it is idempotent and never reassigns anyone's data.
+- **Frontend**: ClerkProvider only when VITE_CLERK_PUBLISHABLE_KEY is baked in at build
+  time; ClerkGate redirects signed-out visitors to the hosted sign-in (accounts.candlelit.us
+  in production, with redirect_url back to the app), shows the private-beta screen for
+  invited users, and hands the token getter to api.ts and ws.ts. UserButton in the header.
+- **Not added, on purpose**: Stripe, Postgres, organizations, plans, Redis.
+
 ## UI conventions (enforced from phase 5c on)
 
 - Navigation, buttons and section headings: Title Case (`Export Ledger`, `Open Positions`).

@@ -21,7 +21,8 @@ def load_env() -> dict[str, str]:
     except FileNotFoundError:
         pass
     for k in ("OPENAI_API_KEY", "DISCORD_WEBHOOK_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
-              "WICK_PASSWORD", "WICK_SESSION_SECRET", "WICK_ENV", "DATABASE_PATH", "PORT"):
+              "WICK_PASSWORD", "WICK_SESSION_SECRET", "WICK_ENV", "DATABASE_PATH", "PORT",
+              "CLERK_SECRET_KEY", "CLERK_AUTHORIZED_PARTIES", "CLERK_JASON_USER_ID"):
         if os.environ.get(k):
             out[k] = os.environ[k].strip()
     return out

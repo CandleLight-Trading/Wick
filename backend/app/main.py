@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config, retention
 from .auth import Auth, AuthMiddleware
+from .clerk import ClerkAuth
 from .adapters.binance import BinanceAdapter
 from .adapters.kraken import KrakenAdapter
 from .alerts import Alerts
@@ -126,8 +127,8 @@ async def configure_auth(auth: Auth, store: Store, env: dict):
     The middleware already holds `auth`, so it is configured in place."""
     password = env.get("WICK_PASSWORD") or None
     prod = is_production(env)
-    if prod and not password:
-        raise SystemExit("WICK_ENV=production but WICK_PASSWORD is not set; refusing to serve an open desk")
+    if prod and not password and not env.get("CLERK_SECRET_KEY"):
+        raise SystemExit("WICK_ENV=production but neither CLERK_SECRET_KEY nor WICK_PASSWORD is set; refusing to serve an open desk")
     secret = env.get("WICK_SESSION_SECRET") or await store.get_setting("session_secret")
     if not secret:
         secret = secrets.token_hex(32)
@@ -142,6 +143,10 @@ async def lifespan(app: FastAPI):
     await store.open()
     env = load_env()
     await configure_auth(app.state.auth, store, env)
+    parties = [p.strip() for p in (env.get("CLERK_AUTHORIZED_PARTIES") or "https://app.candlelit.us,http://localhost:5173,http://127.0.0.1:5173").split(",")]
+    app.state.clerk.configure(env.get("CLERK_SECRET_KEY") or None, parties, env.get("CLERK_JASON_USER_ID") or None)
+    if app.state.clerk.enabled:
+        log.info("clerk auth enabled; authorized parties %s", parties)
     rest = RestClient(config.REST_BASE, config.WEIGHT_SOFT_LIMIT)
     adapter = BinanceAdapter(rest, config.WS_BASE)
 
@@ -194,7 +199,21 @@ async def lifespan(app: FastAPI):
     desk = Desk(store, analysis, alerts, track_fn=track)
     analysis.desk = desk
     analysis.broadcaster = broadcaster
-    await desk.ensure_default_account()
+    # Users. Rows from before accounts existed (user_id NULL) go to Jason's Clerk user when it is
+    # known, or to the single local user when Clerk is off. Idempotent: only NULL rows move.
+    if app.state.clerk.enabled:
+        if app.state.clerk.jason_user_id:
+            owner, _ = await store.get_or_create_user(app.state.clerk.jason_user_id, active=True)
+        else:
+            owner = None
+            log.warning("CLERK_JASON_USER_ID not set: legacy accounts stay unassigned until it is")
+    else:
+        owner, _ = await store.get_or_create_user("local", active=True)
+    if owner:
+        moved = await store.assign_legacy(owner["id"])
+        if any(moved.values()):
+            log.info("legacy rows assigned to user %d: %s", owner["id"], moved)
+        await desk.ensure_default_account(owner["id"])
 
     async def monitor_loop():
         # ALIVE -> READY: wait for continuous history, replay the tape for any trade that
@@ -258,7 +277,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Wick market data", lifespan=lifespan)
 app.state.auth = Auth(None, "placeholder", secure_cookie=False)      # configured in lifespan once the store is open
-app.add_middleware(AuthMiddleware, auth=app.state.auth)
+app.state.clerk = ClerkAuth(None)
+app.add_middleware(AuthMiddleware, auth=app.state.auth, clerk=app.state.clerk)
 app.include_router(router)
 
 # Production: one process serves the built frontend too. Locally Vite serves it and this is a no-op.

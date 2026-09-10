@@ -26,9 +26,9 @@ class FakeAnalysis:
         self.judge = FakeJudge()
         self.calls = 0
 
-    async def maybe_research(self, symbol, force):
+    async def maybe_research(self, symbol, force, user_id=None):
         self.calls += 1
-        row = {"symbol": symbol, "time": T0 + 300 * H, "model": "fake", "stance": "long", "confidence": "medium",
+        row = {"symbol": symbol, "time": T0 + 300 * H, "model": "fake", "stance": "long", "confidence": "medium", "userId": user_id,
                "action": "enter", "thesisVerdict": "strengthened", "mainRisk": "extension", "horizonH": 48, "invalidation": 95.0,
                "trend": "trending_up", "summary": "Looks good.", "price": 100.0, "drivers": [], "risks": [], "numbers": [], "citations": [], "usage": {}}
         await self.store.insert_analysis(row)
@@ -107,11 +107,11 @@ async def test_clear_research_returns_to_not_run_and_stays_cleared(world):
     s = list((await desk.active_setups()).values())[0]
     s = await desk.research(s["id"])
     assert s["state"] == "researched" and "research" in s["payload"]
-    await desk.clear_research(s["id"])
-    s = await store.row("setups", s["id"])
+    await desk.clear_research(None, s["id"])
+    s = await desk.setup_for_user(await store.row("setups", s["id"]), None)
     assert s["state"] == "scanned" and s["recommendation"] is None and "research" not in s["payload"]
-    await desk.refresh_setups()                                   # the old analysis must not re-attach
-    assert (await store.row("setups", s["id"]))["state"] == "scanned"
+    await desk.refresh_setups()                                   # the cleared analysis must not come back
+    assert (await desk.setup_for_user(await store.row("setups", s["id"]), None))["state"] == "scanned"
     assert analysis.calls == 1                                    # clearing spent no model call
 
 
@@ -162,8 +162,8 @@ async def test_stop_fills_automatically_and_waiting_becomes_ready(world):
     assert t["state"] == "closed" and t["exit_reason"] == "stop" and t["exit"] == t["stop"] and t["pnl_usd"] < 0
 
     # A waiting trade: pullback trigger at the 20MA, becomes READY when touched, never opens itself.
-    s = await store.row("setups", s["id"])
-    await store.update("setups", s["id"], {"recommendation": "wait"})
+    # Recommendations now come from the user's own research row, not the shared setup.
+    await store._db.execute("UPDATE analyses SET payload = REPLACE(payload, '\"action\": \"enter\"', '\"action\": \"wait\"') WHERE symbol='X'")
     w = await desk.create_trade(s["id"], acct["id"], "standard", None, force=False)
     assert w["state"] == "waiting" and w["trigger_kind"] == "pullback"
     await store.upsert(Candle("X", "1m", T0 + 300 * H + M, 100, 100, w["plan_entry"] - 0.01, 100, 1, True))

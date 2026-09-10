@@ -76,20 +76,30 @@ class Desk:
                        "playbook": rules.get("playbook"), "riskCharacter": rules.get("riskCharacter")}
             if sym in active:
                 s = active[sym]
-                await self.store.update("setups", s["id"], {"quality": quality, "concern": concern, "updated_at": now,
-                                                            "bias": s["bias"] if s["state"] == "researched" else bias,
+                await self.store.update("setups", s["id"], {"quality": quality, "concern": concern, "updated_at": now, "bias": bias,
                                                             "payload": {**s["payload"], **payload}})
             else:
                 await self.store.insert("setups", {
                     "symbol": sym, "detected_at": now, "timeframe": config.CONDITION_INTERVAL, "horizon_h": config.REC_HORIZON_H,
                     "state": "scanned", "quality": quality, "bias": bias, "concern": concern, "recommendation": None,
                     "updated_at": now, "expires_at": now + 2 * config.REC_HORIZON_H * H_MS, "payload": payload})
-        # A model analysis newer than the setup (and newer than any "clear research") counts as
-        # research, whoever triggered it.
-        for s in await self.store.rows("setups", "state='scanned'"):
-            a = await self.store.latest_analysis(s["symbol"])
-            if a and a["time"] >= s["detected_at"] and a["time"] > s["payload"].get("researchClearedAt", -1):
-                await self._attach_research(s, a)
+
+    RESEARCH_KEYS = ("time", "summary", "thesisVerdict", "mainRisk", "confidence", "trend", "horizonH", "invalidation", "drivers",
+                     "risks", "model", "price", "trigger", "shapeAtResearch", "rulesStanceAtResearch", "action",
+                     "context", "actionModifier", "keyReason", "catalysts")
+
+    async def setup_for_user(self, s: dict, user_id: int | None) -> dict:
+        """Setups are shared scanner output; research is yours. This view merges the two:
+        the setup reads RESEARCHED, with a recommendation and bias, only from the calling
+        user's own analysis, so one person's research never shows up as another's."""
+        a = await self.store.latest_analysis(s["symbol"], user_id)
+        if not a or a["time"] < s["detected_at"]:
+            return {**s, "state": "scanned" if s["state"] == "researched" else s["state"], "recommendation": None,
+                    "payload": {k: v for k, v in s["payload"].items() if k != "research"}}
+        rec = a.get("action") or ("pass" if a["stance"] == "flat" else "enter")
+        bias = a["stance"] if a["stance"] != "flat" else s["bias"]
+        return {**s, "state": "researched", "recommendation": rec, "bias": bias,
+                "payload": {**s["payload"], "research": {k: a.get(k) for k in self.RESEARCH_KEYS}}}
 
     async def pin_setup(self, symbol: str) -> dict:
         """Move a watched coin into the research queue by hand. A pinned setup stays active
@@ -116,16 +126,15 @@ class Desk:
                         "pinned": True, "researchClearedAt": now}})
         return await self.store.row("setups", sid)
 
-    async def clear_research(self, setup_id: int | None = None):
-        """Back to NOT RUN. Removes the cached model conclusion from the active setup(s) only:
+    async def clear_research(self, user_id: int | None, setup_id: int | None = None):
+        """Back to NOT RUN for this user. Hides their research on one setup, or all of it;
         market history, trades, accounts and the usage log are untouched."""
-        now = now_ms()
-        where, params = ("id=?", (setup_id,)) if setup_id else ("state IN ('scanned','researched')", ())
-        for s in await self.store.rows("setups", where, params):
-            payload = {k: v for k, v in s["payload"].items() if k != "research"}
-            payload["researchClearedAt"] = now
-            await self.store.update("setups", s["id"], {"state": "scanned" if s["state"] in ("scanned", "researched") else s["state"],
-                                                        "recommendation": None, "updated_at": now, "payload": payload})
+        if setup_id:
+            s = await self.store.row("setups", setup_id)
+            if s:
+                await self.store.clear_analyses(user_id, s["symbol"])
+        else:
+            await self.store.clear_analyses(user_id)
 
     async def reset_workspace(self):
         """Development helper: expire every active setup so the next scan starts from square one.
@@ -135,36 +144,18 @@ class Desk:
             await self.store.update("setups", s["id"], {"state": "expired", "updated_at": now})
         await self.analysis.scan()
 
-    async def _attach_research(self, s: dict, a: dict):
-        rec = a.get("action") or ("pass" if a["stance"] == "flat" else "enter")
-        bias = a["stance"] if a["stance"] != "flat" else s["bias"]
-        await self.store.update("setups", s["id"], {
-            "state": "researched", "recommendation": rec, "bias": bias, "updated_at": now_ms(),
-            "payload": {**s["payload"], "research": {k: a.get(k) for k in ("time", "summary", "thesisVerdict", "mainRisk", "confidence",
-                                                                            "trend", "horizonH", "invalidation", "drivers", "risks", "model",
-                                                                            "price", "trigger", "shapeAtResearch", "rulesStanceAtResearch", "action",
-                                                                            "context", "actionModifier", "keyReason", "catalysts")}}})
-
-    async def attach_research_symbol(self, symbol: str, a: dict):
-        """A finished research job attaches to whatever active setup the symbol has now."""
-        s = (await self.active_setups()).get(symbol)
-        if s:
-            await self._attach_research(s, a)
-
-    async def research(self, setup_id: int, wait: bool = False) -> dict:
-        """Start research for a setup. Returns at once with the job attached; the setup flips to
-        RESEARCHED when the job lands. `wait=True` runs it inline (tests, and judges without jobs)."""
+    async def research(self, setup_id: int, user_id: int | None = None, wait: bool = False) -> dict:
+        """Start research on a setup for this user. Returns at once with the job attached; the
+        setup reads RESEARCHED for them when the job lands. `wait=True` runs it inline (tests)."""
         s = await self.store.row("setups", setup_id)
         if not s:
             raise KeyError("setup not found")
         if not wait and hasattr(self.analysis, "start_research"):
-            job = self.analysis.start_research(s["symbol"])
-            return {**s, "researchJob": job}
-        a = await self.analysis.maybe_research(s["symbol"], force=True)
+            return {**s, "researchJob": self.analysis.start_research(s["symbol"], user_id)}
+        a = await self.analysis.maybe_research(s["symbol"], force=True, user_id=user_id)
         if a is None:
             raise RuntimeError(self.analysis.judge.status.get("error") or "model judge unavailable")
-        await self._attach_research(s, a)
-        return await self.store.row("setups", setup_id)
+        return await self.setup_for_user(await self.store.row("setups", setup_id), user_id)
 
     async def pass_setup(self, setup_id: int):
         await self.store.update("setups", setup_id, {"state": "passed", "updated_at": now_ms()})
@@ -222,20 +213,21 @@ class Desk:
                 "playbook": playbook, "riskCharacter": character, "riskCapPct": cap, "riskNote": risk_note,
                 "researched": bool(setup) and setup["state"] == "researched", "manual": setup is None}
 
-    async def plan(self, setup_id: int, account_id: int, risk_profile: str) -> dict:
+    async def plan(self, setup_id: int, account_id: int, risk_profile: str, user_id: int | None = None) -> dict:
         s = await self.store.row("setups", setup_id)
         if not s:
             raise KeyError("setup not found")
+        s = await self.setup_for_user(s, user_id)
         side = s["bias"] if s["bias"] in ("long", "short") else "long"
         action = s["recommendation"] if s["recommendation"] in ("enter", "wait") else "enter"
         return await self.plan_for(s["symbol"], side, action, account_id, risk_profile, setup=s)
 
     async def create_trade(self, setup_id: int | None, account_id: int, risk_profile: str, overrides: dict | None, force: bool,
-                           symbol: str | None = None, side: str | None = None) -> dict:
+                           symbol: str | None = None, side: str | None = None, user_id: int | None = None) -> dict:
         """Guided (setup_id) or manual (symbol + side). Wick's PASS is advice and never blocks;
         only the account's risk rules do."""
         if setup_id:
-            p = await self.plan(setup_id, account_id, risk_profile)
+            p = await self.plan(setup_id, account_id, risk_profile, user_id)
             s = p["setup"]
             symbol = s["symbol"]
         else:
@@ -401,7 +393,7 @@ class Desk:
         row = {"symbol": f"{sym}#pos{trade_id}", "time": now, "model": answer.get("model") or self.analysis.judge.model,
                "stance": t["side"], "confidence": answer["confidence"], "horizonH": t["horizon_h"], "invalidation": t["stop"],
                "trend": answer["action"], "summary": answer["summary"], "price": px, "usage": answer.get("usage", {}),
-               "trigger": "position", "kind": "position"}
+               "trigger": "position", "kind": "position", "userId": (await self.store.row("accounts", t["account_id"]) or {}).get("user_id")}
         await self.store.insert_analysis(row)
         research = {"time": now, "action": answer["action"], "reason": answer["reason"], "whatChanged": answer["what_changed"],
                     "summary": answer["summary"], "risks": answer.get("risks", []), "drivers": answer.get("drivers", []),
@@ -416,9 +408,18 @@ class Desk:
     async def rename_account(self, account_id: int, name: str):
         await self.store.update("accounts", account_id, {"name": name.strip()[:60] or "Account"})
 
+    async def accounts_for(self, user_id: int | None) -> list[dict]:
+        return await self.store.rows("accounts", "user_id IS ?", (user_id,), order="id ASC")
+
+    async def trades_for_user(self, user_id: int | None, where: str = "1=1") -> list[dict]:
+        return await self.store.rows("trades", f"({where}) AND account_id IN (SELECT id FROM accounts WHERE user_id IS ?)", (user_id,))
+
     async def delete_account(self, account_id: int):
-        """Removes the account with its trades and equity history. Refuses to delete the last one."""
-        if len(await self.store.rows("accounts")) <= 1:
+        """Removes the account with its trades and equity history. Refuses to delete the owner's last one."""
+        acct = await self.store.row("accounts", account_id)
+        if not acct:
+            raise KeyError("account not found")
+        if len(await self.accounts_for(acct.get("user_id"))) <= 1:
             raise PermissionError("Keep at least one account.")
         for table in ("trades", "equity_snapshots"):
             await self.store._db.execute(f"DELETE FROM {table} WHERE account_id=?", (account_id,))
@@ -673,9 +674,9 @@ class Desk:
             bits.append(f"BTC {btc.change_pct:+.1f}% on the day")
         return "Since entry: " + ", ".join(bits) + "." if bits else ""
 
-    async def briefing(self) -> dict:
-        setups = await self.store.rows("setups", "state IN ('scanned','researched')")
-        trades = await self.store.rows("trades", "state IN ('waiting','ready','open')")
+    async def briefing(self, user_id: int | None = None) -> dict:
+        setups = [await self.setup_for_user(s, user_id) for s in await self.store.rows("setups", "state IN ('scanned','researched')")]
+        trades = await self.trades_for_user(user_id, "state IN ('waiting','ready','open')")
         opens = [t for t in trades if t["state"] == "open"]
         return {"newSetups": sum(1 for s in setups if s["state"] == "scanned" and s["quality"] != "weak"),
                 "researched": sum(1 for s in setups if s["state"] == "researched"),
@@ -698,7 +699,8 @@ class Desk:
             d["wins"] += r["pnl_pct"] > 0
         return out
 
-    async def ensure_default_account(self):
-        if not await self.store.rows("accounts", limit=1):
+    async def ensure_default_account(self, user_id: int | None = None):
+        """Every user starts with one $25K challenge account. Idempotent: only when they have none."""
+        if not await self.accounts_for(user_id):
             await self.store.insert("accounts", {"name": "$25K Challenge", "size": 25_000.0, "daily_loss_pct": 4.0,
-                                                 "max_dd_pct": 8.0, "target_pct": 8.0, "created_at": now_ms()})
+                                                 "max_dd_pct": 8.0, "target_pct": 8.0, "created_at": now_ms(), "user_id": user_id})

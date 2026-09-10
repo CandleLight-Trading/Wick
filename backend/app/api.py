@@ -35,6 +35,49 @@ class LoginBody(BaseModel):
     password: str
 
 
+BETA_MESSAGE = "Wick is currently in private beta. Access for this account has not been enabled yet."
+
+
+async def current_user(request: Request) -> dict:
+    """The Wick user behind this request. With Clerk, the verified `sub` (set by the middleware)
+    maps to a local row, created on first sight; Jason's Clerk id is active by default, anyone
+    else is invited until switched on. Without Clerk (shared password or open dev) everyone is
+    the single local user. Only active users get past this point."""
+    c = ctx(request)
+    clerk = request.app.state.clerk
+    if clerk.enabled:
+        sub = getattr(request.state, "clerk_sub", None)
+        if not sub:
+            raise HTTPException(401, "login required")
+        user, created = await c.store.get_or_create_user(sub, active=(sub == clerk.jason_user_id))
+    else:
+        user, created = await c.store.get_or_create_user("local", active=True)
+    if created or not await c.desk.accounts_for(user["id"]):
+        await c.desk.ensure_default_account(user["id"])
+    if user["access_status"] != "active":
+        raise HTTPException(403, BETA_MESSAGE)
+    return user
+
+
+async def own_account(request: Request, account_id: int) -> tuple[dict, dict]:
+    """(user, account) or 404. A 404, not a 403: other people's accounts do not exist to you."""
+    user = await current_user(request)
+    acct = await ctx(request).store.row("accounts", account_id)
+    if not acct or acct.get("user_id") != user["id"]:
+        raise HTTPException(404, "account not found")
+    return user, acct
+
+
+async def own_trade(request: Request, trade_id: int) -> tuple[dict, dict]:
+    user = await current_user(request)
+    c = ctx(request)
+    t = await c.store.row("trades", trade_id)
+    acct = await c.store.row("accounts", t["account_id"]) if t else None
+    if not t or not acct or acct.get("user_id") != user["id"]:
+        raise HTTPException(404, "trade not found")
+    return user, t
+
+
 def _client_addr(request: Request) -> str:
     fwd = request.headers.get("x-forwarded-for", "")
     return (fwd.split(",")[0].strip() if fwd else None) or (request.client.host if request.client else "?")
@@ -50,9 +93,20 @@ async def healthz(request: Request):
 
 
 @router.get("/api/auth")
-def auth_state(request: Request):
-    a = request.app.state.auth
-    return {"enabled": a.enabled, "loggedIn": a.session_ok(request)}
+async def auth_state(request: Request):
+    """Public. Tells the page which mode it is in and, if a session is present, whether the
+    account is switched on. Never raises: the beta gate needs to render, not 403."""
+    a, clerk = request.app.state.auth, request.app.state.clerk
+    if clerk.enabled:
+        claims = await clerk.verify(clerk.token_from(request.headers, request.cookies))
+        status = None
+        if claims:
+            user, created = await ctx(request).store.get_or_create_user(claims["sub"], active=(claims["sub"] == clerk.jason_user_id))
+            if created:
+                await ctx(request).desk.ensure_default_account(user["id"])
+            status = user["access_status"]
+        return {"enabled": True, "mode": "clerk", "loggedIn": bool(claims), "accessStatus": status, "betaMessage": BETA_MESSAGE}
+    return {"enabled": a.enabled, "mode": "password", "loggedIn": a.session_ok(request), "accessStatus": "active"}
 
 
 @router.post("/api/login")
@@ -185,7 +239,8 @@ async def condition_log(request: Request, symbol: str | None = None, limit: int 
 
 @router.get("/api/analysis")
 async def analysis(request: Request):
-    return await ctx(request).analysis.payload()
+    user = await current_user(request)
+    return await ctx(request).analysis.payload(user["id"])
 
 
 @router.post("/api/analysis/run")
@@ -199,7 +254,8 @@ async def analysis_run(request: Request, symbol: str):
         raise HTTPException(409, c.analysis.judge.status.get("error") or "model judge unavailable")
     if symbol not in c.analysis.features:
         await c.analysis.scan(only={symbol})
-    return c.analysis.start_research(symbol)
+    user = await current_user(request)
+    return c.analysis.start_research(symbol, user["id"])
 
 
 @router.get("/api/paper")
@@ -249,20 +305,23 @@ async def setup_research(setup_id: int, request: Request):
     c = ready_ctx(request)
     if not c.analysis.judge.status.get("configured"):
         raise HTTPException(409, c.analysis.judge.status.get("error") or "model judge unavailable")
+    user = await current_user(request)
     try:
-        return await c.desk.research(setup_id)
+        return await c.desk.research(setup_id, user["id"])
     except Exception as e:
         raise _perm(e)
 
 
 @router.post("/api/setups/{setup_id}/pass")
 async def setup_pass(setup_id: int, request: Request):
+    await current_user(request)
     await ctx(request).desk.pass_setup(setup_id)
     return {"ok": True}
 
 
 @router.post("/api/setups/pin")
 async def setup_pin(request: Request, symbol: str):
+    await current_user(request)
     try:
         return await ctx(request).desk.pin_setup(symbol.upper())
     except Exception as e:
@@ -271,18 +330,21 @@ async def setup_pin(request: Request, symbol: str):
 
 @router.post("/api/setups/{setup_id}/clear_research")
 async def setup_clear_research(setup_id: int, request: Request):
-    await ctx(request).desk.clear_research(setup_id)
+    user = await current_user(request)
+    await ctx(request).desk.clear_research(user["id"], setup_id)
     return {"ok": True}
 
 
 @router.post("/api/analysis/clear_research")
 async def analysis_clear_research(request: Request):
-    await ctx(request).desk.clear_research(None)
+    user = await current_user(request)
+    await ctx(request).desk.clear_research(user["id"])
     return {"ok": True}
 
 
 @router.post("/api/analysis/reset_workspace")
 async def analysis_reset_workspace(request: Request):
+    await current_user(request)
     await ctx(request).desk.reset_workspace()
     return {"ok": True}
 
@@ -292,9 +354,10 @@ async def plan(request: Request, account_id: int, setup_id: int | None = None, s
                side: str = "long", risk_profile: str = "standard"):
     c = ctx(request)
     d = c.desk
+    user, _ = await own_account(request, account_id)
     try:
         if setup_id:
-            return await d.plan(setup_id, account_id, risk_profile)
+            return await d.plan(setup_id, account_id, risk_profile, user["id"])
         if not symbol:
             raise KeyError("setup_id or symbol required")
         symbol = symbol.upper()
@@ -338,19 +401,22 @@ async def analysis_scan(request: Request, symbol: str | None = None):
 
 @router.get("/api/equity")
 async def equity(request: Request, account_id: int, range: str = "1w"):
+    await own_account(request, account_id)
     return await ctx(request).desk.equity_curve(account_id, range)
 
 
 @router.get("/api/accounts")
 async def accounts(request: Request):
     c = ctx(request)
-    return [await c.desk.account_view(a["id"]) for a in await c.store.rows("accounts", order="id ASC")]
+    user = await current_user(request)
+    return [await c.desk.account_view(a["id"]) for a in await c.desk.accounts_for(user["id"])]
 
 
 @router.post("/api/accounts")
 async def create_account(body: AccountBody, request: Request):
     c = ctx(request)
-    aid = await c.store.insert("accounts", {**body.model_dump(), "created_at": now_ms()})
+    user = await current_user(request)
+    aid = await c.store.insert("accounts", {**body.model_dump(), "created_at": now_ms(), "user_id": user["id"]})
     return await c.desk.account_view(aid)
 
 
@@ -365,12 +431,14 @@ class NotesBody(BaseModel):
 @router.patch("/api/accounts/{account_id}")
 async def rename_account(account_id: int, body: NameBody, request: Request):
     c = ctx(request)
+    await own_account(request, account_id)
     await c.desk.rename_account(account_id, body.name)
     return await c.desk.account_view(account_id)
 
 
 @router.delete("/api/accounts/{account_id}")
 async def delete_account(account_id: int, request: Request):
+    await own_account(request, account_id)
     try:
         await ctx(request).desk.delete_account(account_id)
     except Exception as e:
@@ -381,9 +449,7 @@ async def delete_account(account_id: int, request: Request):
 @router.get("/api/accounts/{account_id}/ledger.csv")
 async def ledger(account_id: int, request: Request):
     c = ctx(request)
-    acct = await c.store.row("accounts", account_id)
-    if not acct:
-        raise HTTPException(404, "account not found")
+    _, acct = await own_account(request, account_id)
     name = "".join(ch if ch.isalnum() else "_" for ch in acct["name"]).strip("_") or "account"
     return Response(await c.desk.ledger_csv(account_id), media_type="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="wick_ledger_{name}.csv"'})
@@ -392,15 +458,17 @@ async def ledger(account_id: int, request: Request):
 @router.patch("/api/trades/{trade_id}")
 async def trade_notes(trade_id: int, body: NotesBody, request: Request):
     c = ctx(request)
+    await own_trade(request, trade_id)
     await c.desk.set_notes(trade_id, body.notes)
     return await c.store.row("trades", trade_id)
 
 
 @router.post("/api/trades")
 async def create_trade(body: TradeBody, request: Request):
+    user, _ = await own_account(request, body.account_id)
     try:
         return await ready_ctx(request).desk.create_trade(body.setup_id, body.account_id, body.risk_profile, body.overrides, body.force,
-                                                    symbol=body.symbol, side=body.side)
+                                                    symbol=body.symbol, side=body.side, user_id=user["id"])
     except Exception as e:
         raise _perm(e)
 
@@ -411,6 +479,7 @@ class CloseBody(BaseModel):
 
 @router.get("/api/trades/{trade_id}/close_preview")
 async def close_preview(trade_id: int, request: Request, fraction: float = 1.0):
+    await own_trade(request, trade_id)
     try:
         return await ctx(request).desk.close_preview(trade_id, fraction)
     except Exception as e:
@@ -420,6 +489,7 @@ async def close_preview(trade_id: int, request: Request, fraction: float = 1.0):
 @router.post("/api/trades/{trade_id}/close")
 async def trade_close(trade_id: int, request: Request, body: CloseBody | None = None):
     """Close all or part of a position. The UI shows a preview and asks for confirmation first."""
+    await own_trade(request, trade_id)
     try:
         return await ctx(request).desk.close(trade_id, "manual", fraction=(body.fraction if body else 1.0))
     except Exception as e:
@@ -428,6 +498,7 @@ async def trade_close(trade_id: int, request: Request, body: CloseBody | None = 
 
 @router.post("/api/trades/{trade_id}/research")
 async def trade_research(trade_id: int, request: Request):
+    await own_trade(request, trade_id)
     try:
         return await ready_ctx(request).desk.research_position(trade_id)
     except Exception as e:
@@ -437,6 +508,7 @@ async def trade_research(trade_id: int, request: Request):
 @router.post("/api/trades/{trade_id}/{action}")
 async def trade_action(trade_id: int, action: str, request: Request):
     d = ready_ctx(request).desk
+    await own_trade(request, trade_id)
     try:
         if action == "open":
             return await d.open_now(trade_id)
@@ -453,6 +525,7 @@ async def trade_action(trade_id: int, action: str, request: Request):
 @router.get("/api/prop")
 async def prop(request: Request, account_id: int, range: str = "all"):
     d = ctx(request).desk
+    await own_account(request, account_id)
     acct = await d.account_view(account_id)
     if not acct:
         raise HTTPException(404, "account not found")
@@ -479,13 +552,27 @@ async def ws_endpoint(ws: WebSocket):
     "tickers": ["BTCUSDT"], "depth": "BTCUSDT" | null}. Each message REPLACES the client's
     subscription set. Server pushes kline / ticker / depth / status / backfilled messages."""
     c = ws.app.state.ctx
-    auth = ws.app.state.auth
-    if auth.enabled and not (auth.session_ok(ws) and auth.same_origin(ws.headers, ws.headers.get("host", ""))):
+    auth, clerk = ws.app.state.auth, ws.app.state.clerk
+    user_id = None
+    if clerk.enabled:
+        # Browsers cannot set headers on a socket, so the token rides in the query string (or the cookie).
+        claims = await clerk.verify(ws.query_params.get("token") or ws.cookies.get("__session"))
+        user = await c.store.user_by_clerk(claims["sub"]) if claims else None
+        if not user or user["access_status"] != "active" or not auth.same_origin(ws.headers, ws.headers.get("host", "")):
+            await ws.accept()
+            await ws.close(code=4401, reason="login required")
+            return
+        user_id = user["id"]
+    elif auth.enabled and not (auth.session_ok(ws) and auth.same_origin(ws.headers, ws.headers.get("host", ""))):
         await ws.accept()               # accept then close, so the browser sees our code instead of a bare 403
         await ws.close(code=4401, reason="login required")
         return
+    else:
+        local = await c.store.user_by_clerk("local")
+        user_id = local["id"] if local else None
     await ws.accept()
     client = c.broadcaster.add(ws)
+    client.user_id = user_id
     sender = asyncio.create_task(client.sender())
     client.offer(status_payload(c))
     try:

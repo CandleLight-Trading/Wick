@@ -23,6 +23,7 @@ class Client:
         self.tickers: set[str] = set()
         self.depth: str | None = None
         self.dropped = 0
+        self.user_id: int | None = None          # private events (research, trade ready) go only here
 
     def offer(self, msg: dict):
         try:
@@ -93,6 +94,12 @@ class Broadcaster:
     def publish_all(self, msg: dict):
         for client in self.clients.values():
             client.offer(msg)
+
+    def publish_user(self, user_id: int | None, msg: dict):
+        """Private state never fans out: only sockets that authenticated as this user get it."""
+        for client in self.clients.values():
+            if client.user_id == user_id:
+                client.offer(msg)
 
     def stats(self) -> dict:
         return {"clients": len(self.clients), "droppedFrames": sum(c.dropped for c in self.clients.values())}
