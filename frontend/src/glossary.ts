@@ -223,6 +223,250 @@ export const GLOSSARY: Record<string, (v?: unknown, extra?: string, ctx?: Ctx) =
     term: "Daily loss limit · remaining budget",
     what: "Lose this much in one day and trading stops until tomorrow. Wick refuses a trade whose stop-out would breach what is left of today's budget: the other rule that blocks outright.",
   }),
+
+  // ---- Context tab ----
+  ctxMoveToday: (v, _e, ctx) => ({
+    title: "Which way, and how far, since the day began",
+    term: "Move since yesterday's UTC close",
+    here: num(v) ? `${sym(ctx)} is ${v >= 0 ? "up" : "down"} ${Math.abs(v).toFixed(2)}% since the previous UTC daily close. That is direction and size, not whether the move is unusual for ${sym(ctx)}: the next row answers that.` : undefined,
+    what: "Raw percentages mislead across coins. A 2% move is a quiet day for a small coin and a notable one for Bitcoin, so Wick always pairs this number with the move in ATR.",
+  }),
+  ctxAtrDaily: (v, _e, ctx) => ({
+    title: "Typical movement in a day",
+    term: "ATR(14) on daily bars",
+    here: num(v) ? `${sym(ctx)}'s daily range has recently averaged about ${v.toFixed(2)}% of price${num(ctx?.price) ? ` (about $${(ctx!.price! * v / 100).toLocaleString(undefined, { maximumFractionDigits: 0 })})` : ""}. A move materially smaller than this may simply be ordinary daily movement.` : undefined,
+    what: "How much this coin normally thrashes around in a day. It measures movement, not direction, and it is the yardstick Wick uses for every stop, target and move.",
+    formal: "Average True Range: the average of the full daily range, including any gap from the prior close, over 14 days.",
+  }),
+  ctxAtrHourly: (v, _e, ctx) => ({
+    title: "Typical movement in an hour",
+    term: "ATR(14) on hourly bars",
+    here: num(v) ? `${sym(ctx)} has recently moved about $${v.toLocaleString(undefined, { maximumFractionDigits: 2 })} during a typical hourly bar${num(ctx?.price) ? ` (${(v / ctx!.price! * 100).toFixed(2)}%)` : ""}. Wick uses it to judge whether short-term moves, stops and targets are large or small relative to normal hourly noise.` : undefined,
+    what: "The same idea as the daily ATR, one bar at a time. A stop closer than an hour or two of this is inside the noise.",
+  }),
+  ctxRealizedVol: (v, win, ctx) => ({
+    title: "How much it has actually been moving",
+    term: `Realized volatility, ${win ?? ""}, annualized`,
+    here: num(v) ? `${sym(ctx)}'s actual price movement over the last ${win ?? "window"} corresponds to about ${v.toFixed(0)}% annualized volatility. Compare the 7-day and 30-day figures: the shorter one says whether things are calmer or wilder than the recent norm.` : undefined,
+    what: "Volatility that has already happened, from the spread of recent returns. Annualized so different windows can be compared; it is not a prediction that the coin moves this much in a year.",
+    formal: "Standard deviation of hourly log returns over the window, scaled by the square root of the number of hours in a year.",
+  }),
+  ctxImpliedVol: (v, _e, ctx) => ({
+    title: "How much movement the options market is paying for",
+    term: "Implied volatility · DVOL, 30 days, annualized",
+    here: num(v) ? `Options on ${sym(ctx)} are currently priced as if it will move about ${v.toFixed(1)}% annualized over the next month. Compare with realized volatility above: implied is what traders expect and pay for, realized is what happened.` : undefined,
+    what: "Options cost more when traders expect bigger moves. Working backward from their prices gives the movement the market is bracing for. It is a consensus expectation, not a forecast that comes true.",
+    formal: "Deribit's DVOL index, a 30-day forward-looking implied volatility for BTC and ETH.",
+  }),
+  ctxVariancePremium: (v) => ({
+    title: "Are options bracing for more than has happened?",
+    term: "Variance premium · implied minus realized, points",
+    here: num(v) ? `${v >= 0 ? "+" : ""}${v.toFixed(1)} points: ${Math.abs(v) < 3 ? "implied volatility is close to what has recently happened; the options market is not bracing for much more or less than the recent norm." : v > 0 ? "options are pricing more movement than has recently occurred, which often means traders are paying for protection." : "options are pricing less movement than has recently occurred; recent turbulence is expected to fade."} Positive or negative is not bullish or bearish on its own.` : undefined,
+    what: "Implied minus realized volatility. A gap says whether the market expects the future to be wilder or calmer than the recent past.",
+  }),
+  ctxTakerBaseline: (v, base) => ({
+    title: "Is today's urgency normal for this coin?",
+    term: "Taker buy share · 7-day and 30-day means",
+    here: num(v) && base && Number.isFinite(Number(base)) ? `Today's ${(v * 100).toFixed(0)}% is ${v > Number(base) + 0.02 ? "above" : v < Number(base) - 0.02 ? "below" : "about level with"} this coin's recent ${(Number(base) * 100).toFixed(0)}% baseline, so buying pressure is ${v > Number(base) + 0.02 ? "stronger" : v < Number(base) - 0.02 ? "weaker" : "about as strong"} as usual.` : undefined,
+    what: "Some coins run structurally above or below 50% aggressive buying. Only the comparison with the coin's own baseline says whether today is different.",
+  }),
+  ctxMa: (v, n) => ({
+    title: n === "20" ? "Short-term reference" : n === "50" ? "Medium-term reference" : "Longer-term reference",
+    term: `${n}-hour moving average · distance of price from it`,
+    here: num(v) ? `Price is ${Math.abs(v).toFixed(2)}% ${v >= 0 ? "above" : "below"} the ${n}-hour average. ${n === "200" ? "Below the 200 does not automatically mean sell, nor above mean buy; it says which regime the last week or so has been in." : "Distance, not a crossover signal."}` : undefined,
+    what: n === "20" ? "The average price of the last 20 hours: where price has recently been. Pullbacks in a trend often return to it." : n === "50" ? "The average of the last two days or so. A medium-term reference for the direction of the move." : "The average of the last eight days or so. A slower reference often used to separate broader regimes.",
+  }),
+  ctxCorrelation: (v, _e, ctx) => ({
+    title: "Does it move with Bitcoin?",
+    term: "Correlation to BTC · 30 days of daily returns, −1 to +1",
+    here: num(v) ? `${v.toFixed(2)}: ${sym(ctx)}'s daily returns have ${v > 0.7 ? "moved closely with Bitcoin, so a Bitcoin move may explain much of what you see here" : v > 0.3 ? "moved with Bitcoin some of the time" : v > -0.3 ? "moved largely independently of Bitcoin recently" : "moved against Bitcoin recently"}. If everything you watch sits near 0.9 you effectively hold one position.` : undefined,
+    what: "How consistently two things move together, not whether one causes the other. Bitcoin itself is not shown because its correlation to itself is trivially 1.",
+  }),
+  ctxRsi: (v, pctl, ctx) => ({
+    title: "Recent momentum, and how it compares with this coin's own history",
+    term: "RSI(14), hourly · with percentile of this coin's readings",
+    here: num(v) ? `RSI is ${v.toFixed(1)}: ${v > 70 ? "recent price action has been unusually one-sided upward. Strong momentum, not a reversal signal by itself." : v < 30 ? "recent price action has been unusually one-sided downward. Weak momentum, not a buy signal by itself." : v > 55 ? "slightly stronger recent momentum, nothing close to an extreme." : v < 45 ? "slightly weaker recent momentum, nothing close to an extreme." : "balanced recent momentum."}${pctl ? ` The ${pctl}th percentile means roughly ${100 - Number(pctl)}% of ${sym(ctx)}'s recorded hourly RSI readings were higher than the current value.` : ""}` : undefined,
+    what: "The percentile matters more than the raw number: a reading that is ordinary for one coin is an extreme for another.",
+  }),
+  ctxSpread: (v) => ({
+    title: "What it costs to cross from buying to selling",
+    term: "Spread · best ask minus best bid, basis points",
+    here: num(v) ? `${v.toFixed(2)} bps (${(v / 100).toFixed(3)}%): ${v < 2 ? "the best buy and sell prices are almost identical; a small position pays very little spread right now." : v < 10 ? "a modest spread; part of every round trip's cost." : "a wide spread; every round trip pays this before anything else."}` : undefined,
+    what: "Every trade pays the spread twice, in and out. 1 basis point = 0.01%.",
+  }),
+  ctxBestBidAsk: () => ({
+    title: "The best prices on each side right now",
+    term: "Best bid / best ask",
+    what: "The best bid is the highest price someone is currently offering to buy at; the best ask is the lowest price someone is offering to sell at. A market buy fills at the ask, a market sell at the bid.",
+  }),
+  ctxDepth: (v) => ({
+    title: "How far the snapshot can see",
+    term: "Order-book depth · snapshot coverage",
+    here: num(v) ? `The snapshot reaches about ±${v.toFixed(2)}% from the mid price. Bands beyond that are dimmed because the figures there are incomplete, not because nothing is there.` : undefined,
+    what: "Depth is how much buy and sell liquidity rests near the current price. Deeper books absorb larger trades with less price movement.",
+  }),
+  ctxNotional: () => ({
+    title: "The visible orders, in dollars",
+    term: "Bid / ask notional within the band",
+    what: "Converts the resting orders on each side into dollar value so the two sides can be compared. Resting orders can be cancelled in an instant, so this is context, not a promise of liquidity.",
+  }),
+  ctxImbalance: (v) => ({
+    title: "Which side has more waiting",
+    term: "Order-book imbalance · (bid − ask) / (bid + ask)",
+    here: num(v) ? `${v.toFixed(2)}: ${v > 0.3 ? "visible bid liquidity outweighs visible asks in this band." : v < -0.3 ? "visible ask liquidity outweighs visible bids in this band." : "the two sides are roughly balanced."} Resting orders change quickly, so treat this as context rather than a standalone signal.` : undefined,
+    what: "Near +1 means mostly bids, near −1 mostly asks, near 0 balanced.",
+  }),
+  ctxWhoPays: (v) => ({
+    title: "Who is paying whom",
+    term: "Funding direction",
+    here: num(v) ? (v > 0 ? "Positive funding: long positions are paying short positions. A modest long-side lean in perpetual positioning." : v < 0 ? "Negative funding: short positions are paying long positions. A modest short-side lean." : "Zero: neither side is paying.") : undefined,
+    what: "The displayed annualized figure is what the current rate would amount to if it persisted continuously. Funding changes every eight hours, so that is a scale, not a forecast.",
+  }),
+  ctxMarkPrice: () => ({
+    title: "The exchange's reference price for the contract",
+    term: "Mark price",
+    what: "Used for funding and liquidation calculations. Designed to be less sensitive to brief trading spikes than the last traded price, so a single wild print does not liquidate anyone.",
+  }),
+  ctxMarkVsSpot: (v) => ({
+    title: "Is the futures contract trading rich or cheap to spot?",
+    term: "Basis · mark price vs Binance spot, basis points",
+    here: num(v) ? `${v >= 0 ? "+" : ""}${v.toFixed(1)} bps: ${Math.abs(v) < 5 ? "the perpetual is trading almost exactly at spot; very little premium or discount." : v > 0 ? "the perpetual trades at a premium to spot, consistent with leveraged longs paying up." : "the perpetual trades at a discount to spot, consistent with leveraged shorts pressing."}` : undefined,
+    what: "Funding exists to pull this gap toward zero. A persistent gap is another view of which side is crowded.",
+  }),
+  ctxOpenInterest: () => ({
+    title: "How many contracts are open",
+    term: "Open interest · in coins",
+    what: "Outstanding perpetual positions that have not been closed, counted in the coin. Rising during a move means new exposure is being added; falling means positions are being closed. Direction needs other context.",
+  }),
+
+  // ---- base rates and the live condition log ----
+  brCondition: () => ({
+    title: "A market state that has happened before",
+    term: "Condition",
+    what: "Something true right now that was also true at earlier moments, such as price being below its 200-hour average or volume above twice its norm. The table asks: what happened after moments like this one on this coin?",
+  }),
+  brEpisodes: () => ({
+    title: "How many separate times it happened",
+    term: "Episodes",
+    what: "A distinct historical occurrence of the condition. Adjacent bars where it stayed true are grouped as one episode, so a week-long stretch counts once rather than 168 times.",
+  }),
+  brHit: (h) => ({
+    title: `How often price was up ${h} later, after costs`,
+    term: `Hit rate, net · +${h} horizon, with a 95% confidence interval`,
+    what: "The share of episodes whose forward return was positive after Wick's assumed 0.20% round-trip fee. The bracketed range is the statistical uncertainty around that share: wider means less history and less precision. It is not a 95% chance that the next outcome lands inside it.",
+    formal: "Wilson score interval on the net hit rate. Grey cells have fewer than the minimum episodes to be worth reading.",
+  }),
+  brMedian: (v) => ({
+    title: "The middle outcome",
+    term: "Median net return",
+    here: num(v) ? `${v >= 0 ? "+" : ""}${v.toFixed(2)}%: half of the episodes did better than this after costs, half did worse.` : undefined,
+    what: "Less swayed by a few extreme episodes than the average would be.",
+  }),
+  brIqr: () => ({
+    title: "What a typical spread of outcomes looked like",
+    term: "Interquartile range · 25th to 75th percentile",
+    what: "The middle half of outcomes. It shows how varied the results were without being dominated by the wildest episodes.",
+  }),
+  brN: (v) => ({
+    title: "How much evidence this rests on",
+    term: "n · number of episodes",
+    here: num(v) ? `${v} episodes. ${v < 30 ? "Too few to trust; treat the figure as an anecdote." : v < 100 ? "Enough to read, not enough to lean on." : "A reasonable sample for this coin."}` : undefined,
+    what: "Small samples produce impressive-looking hit rates by accident. The confidence interval widens to say so.",
+  }),
+  brWalk: (v) => ({
+    title: "Did the pattern survive out of the period it was found in?",
+    term: "Walk-forward · first year vs second year of history",
+    here: Array.isArray(v) && num(v[0]) && num(v[1]) ? `${(v[0] * 100).toFixed(0)}% in the first year, ${(v[1] * 100).toFixed(0)}% in the second. ${Math.abs(v[0] - v[1]) > 0.15 ? "A large difference: the pattern may not be stable over time, or it was fitted rather than found." : "Similar in both halves, which is what a stable pattern looks like."}` : undefined,
+    what: "Splitting the history in two is the cheapest honest test. A pattern that only worked in one half is a warning.",
+  }),
+  brGross: () => ({
+    title: "Before trading costs",
+    term: "Gross hit rate and median",
+    what: "The same figures before Wick's assumed 0.20% round-trip taker fee. The gap between gross and net is what costs eat on short horizons.",
+  }),
+  brOverlap: (_v, detail) => ({
+    title: "These observations are not independent",
+    term: "Overlapping windows",
+    here: detail ? `${detail}: episodes start closer together than the horizon they are measured over, so consecutive outcomes share the same bars.` : undefined,
+    what: "When forward-return windows overlap, the effective sample is smaller than n suggests and the confidence interval is too narrow.",
+  }),
+  brHorizon: (h) => ({
+    title: `What price did ${h} after the condition appeared`,
+    term: `Forward return · +${h}`,
+    what: "Net of the assumed round-trip cost. Dots mean the window has not finished yet.",
+  }),
+  logOos: () => ({
+    title: "Recorded before the answer was known",
+    term: "Out-of-sample · live condition log",
+    what: "The base-rate table was discovered on the same history it summarizes, so patterns can look stronger there than they will on unseen data. This log writes each condition down as it becomes true and fills in the result later, which is the honest test.",
+  }),
+  logOnsets: () => ({ title: "New occurrences since live tracking began", term: "Onsets", what: "Each time the condition flipped from false to true on a closed hourly candle." }),
+  logResolved: () => ({ title: "Old enough for the full result to be known", term: "Resolved at 24h", what: "Onsets at least 24 hours old, so the +24h return is final." }),
+  logPositive: () => ({ title: "How many ended positive after costs", term: "Positive net", what: "The share of resolved onsets whose 24-hour return was positive after the assumed round-trip fee. Compare with the historical hit rate above." }),
+
+  // ---- chart guides ----
+  chartUptrend: () => ({
+    title: "Higher highs and higher lows",
+    term: "Uptrend structure",
+    what: "Each pullback stopped above the previous one and each push went further than the last: buyers are accepting progressively higher prices. This supports an uptrend reading; it does not guarantee continuation.",
+  }),
+  chartDowntrend: () => ({
+    title: "Lower highs and lower lows",
+    term: "Downtrend structure",
+    what: "Each bounce stopped below the previous one and each drop went further: sellers are accepting progressively lower prices. It describes what has happened, not what must happen next.",
+  }),
+  chartRange: () => ({
+    title: "Going nowhere, for now",
+    term: "Range",
+    what: "No clean sequence of highs and lows. Price is oscillating between levels that have held. Ranges resolve eventually; the direction is not implied by the range itself.",
+  }),
+  chartSupport: (v) => ({
+    title: "Where buyers have stepped in before",
+    term: "Support · cluster of swing lows",
+    here: num(v) ? `${v > 1 ? `Touched ${v} times: ` : ""}price has stopped falling around here before. Wick treats support as an area, not an exact price.` : undefined,
+    what: "A level where selling has been absorbed previously. If it breaks, the buyers who defended it are no longer holding, which is why breaks matter more than the level itself.",
+  }),
+  chartResistance: (v) => ({
+    title: "Where sellers have shown up before",
+    term: "Resistance · cluster of swing highs",
+    here: num(v) ? `${v > 1 ? `Touched ${v} times: ` : ""}price has struggled to trade above here before. An area, not a magic number.` : undefined,
+    what: "A clean break with strong participation matters because the sellers who defended the level are no longer holding it.",
+  }),
+  chartBreakout: (v) => ({
+    title: "Price has left the range to the upside",
+    term: "Breakout",
+    here: v === true ? "On elevated volume, which is what distinguishes a meaningful breakout from a brief poke through the level." : "Without a volume expansion. Breakouts on thin volume fail more often; Wick looks for volume, momentum, flow and follow-through before believing one.",
+    what: "Price has moved above a level that previously contained it.",
+  }),
+  chartBreakdown: (v) => ({
+    title: "Price has left the range to the downside",
+    term: "Breakdown",
+    here: v === true ? "On elevated volume: participation is behind the move." : "Without a volume expansion, which makes a failed breakdown more likely.",
+    what: "Price has moved below a level that previously held it.",
+  }),
+  chartCompression: (v) => ({
+    title: "Volatility has gone quiet",
+    term: "Compression",
+    here: num(v) ? `The last 20 bars cover only ${Math.round(v * 100)}% of the range before them. A big move usually follows a squeeze; the direction is not implied.` : undefined,
+    what: "Ranges contract before they expand. Compression says a move is coming, not which way.",
+  }),
+  chartExtension: (v) => ({
+    title: "Stretched from its recent average",
+    term: "Extension · distance from the 20-bar mean, in ATR",
+    here: num(v) ? `${Math.abs(v).toFixed(1)} ATR ${v > 0 ? "above" : "below"} the 20-bar mean. Much larger than normal short-term movement, so entering here carries more risk of chasing; pullbacks toward the mean are common from here.` : undefined,
+    what: "Price tends to return toward its recent average. The further it is stretched, the worse the entry, whatever the direction.",
+  }),
+  chartPullback: () => ({
+    title: "Moving against the trend, temporarily",
+    term: "Pullback",
+    what: "Price is back at its 20-bar mean inside a trend. A controlled pullback can offer a better entry than chasing an extended move, provided the structure of higher lows (or lower highs) remains intact.",
+  }),
+  shapeName: (label, name) => ({
+    title: name ? String(name) : "Shape",
+    term: "3-day shape · from the hourly candles",
+    what: typeof label === "string" && SHAPE_PLAIN[label] ? SHAPE_PLAIN[label] : "The geometry of the last three days, given a name. Shapes describe what happened; they do not predict.",
+  }),
+
 };
 
 function interpretMove(v: number, ctx?: Ctx): string {

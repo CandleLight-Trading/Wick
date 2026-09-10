@@ -583,6 +583,34 @@ Observation stays separate from prediction: nothing says what price "will" do.
 Some labels carry both words: "Planned loss · 1R", "Reward / risk · R:R",
 "Buyer urgency" for taker share. The vocabulary is still taught; it just lands second.
 
+## Phase 9: Context explained, Market headers, chart guides
+
+- **Context** now answers "so what?" for every number that could raise it: move today
+  paired with move in ATR, both ATRs with the coin's own dollars, realized vs implied vol
+  with the "annualized is not a forecast" line, variance premium without a bullish/bearish
+  reading, taker share against the coin's own baseline, the moving-average hierarchy as
+  one sentence before the three rows, RSI with its percentile spelled out, spread, depth
+  coverage, notional, imbalance with its "orders can vanish" caveat, funding direction,
+  mark price, basis, open interest. Correlation is hidden on BTC itself. A one-sentence
+  summary sits beside the volume hero: "Today's move is small: BTC is down 0.29%, 0.10 of
+  a typical day's range, on 0.8× normal volume." Relationships, not three tooltips.
+- **Base rates and the live log** explain condition, episode, hit rate net with the
+  confidence-interval caveat, median, IQR, n with a plain verdict on the sample size,
+  walk-forward with a stability verdict, gross vs net, overlapping windows, and what
+  out-of-sample means. The multiple-testing and survivorship warnings stay.
+- **Market headers** get the same treatment. Accel is explained as exactly what it is:
+  this hour's change minus the previous hour's.
+- **Chart guides** (Charts tab: Off · Structure · Full). `structure.py` reads the same
+  candles a trader looks at, deterministically: pivot highs and lows labelled HH/LH and
+  HL/LL, support and resistance as clusters of swing prices with touch counts, the last
+  swings read as uptrend / downtrend / range, and events: breakout or breakdown of the
+  60-bar range (with or without volume), compression, extension from the 20-bar mean in
+  the interval's own ATR, pullback inside a trend. Structure draws markers and dashed
+  levels; Full adds a hoverable panel with the 1h shape, the playbook from Analysis (one
+  engine, one opinion), today's move and volume, and the sentences. Refreshed on each
+  closed bar, at most every 30 s. Observation only; the panel says so.
+- Operational status-bar numbers (weight, reconnects, kraken, perps) now say what they are.
+
 ## UI conventions (enforced from phase 5c on)
 
 - Navigation, buttons and section headings: Title Case (`Export Ledger`, `Open Positions`).

@@ -90,16 +90,16 @@ export default function Market() {
         <table className="w-full text-sm num">
           <thead className="sticky top-0 bg-zinc-950 text-zinc-500">
             <tr>
-              {header("symbol", "Symbol", false)}
-              {header("last", "Last")}
-              {header("changePct", "24h %")}
-              {header("quoteVolume", "24h Volume (USDT)")}
-              {header("high", "24h High")}
-              {header("low", "24h Low")}
-              {header("vel1h", "1h %", true, "How fast price is moving right now: change over the last hour.")}
-              {header("accel1h", "Accel", true, "Is it speeding up? This hour's change minus the previous hour's, in percentage points. Positive means momentum is building, negative means it is fading.")}
-              <th className="px-2 py-1.5 font-normal text-right" title="Kraken last price minus Binance last price, in basis points. Tracked pairs listed on Kraken only.">Kraken Δ</th>
-              <th className="px-2 py-1.5 font-normal text-left" title="Last 24 hourly closes. Only coins Wick tracks have local candles.">24h Trend</th>
+              {header("symbol", "Symbol", false, "The trading pair. BTCUSDT is Bitcoin priced in USDT, a dollar stablecoin. A blue dot means Wick stores this coin's candles locally.")}
+              {header("last", "Last", true, "The most recent traded price Wick has seen for this pair.")}
+              {header("changePct", "24h %", true, "Price change over the last 24 hours, a rolling window ending now. Direction and size, not whether the move is unusual for this coin; for that, see Move in ATR on its Analysis card.")}
+              {header("quoteVolume", "24h Volume (USDT)", true, "Dollar value traded over the last 24 hours. More volume means more participants and easier execution at size.")}
+              {header("high", "24h High", true, "The highest traded price in the last 24 hours. With the low, the day's range.")}
+              {header("low", "24h Low", true, "The lowest traded price in the last 24 hours.")}
+              {header("vel1h", "1h %", true, "Change over the most recent hour. Comparing it with the 24h change separates a fresh move from one that happened much earlier in the day.")}
+              {header("accel1h", "Accel", true, "Whether the move is speeding up or fading: this hour's change minus the previous hour's, in percentage points. +0.5 means the last hour moved half a point more than the hour before. Positive is momentum building, negative is momentum fading; it says nothing about direction on its own.")}
+              <th className="px-2 py-1.5 font-normal text-right" title="Kraken's price minus Binance's for the same pair, in basis points (1 bp = 0.01%). Usually within a few bps. A large gap means one venue is lagging, thin, or seeing flow the other is not. Shown for tracked pairs that Kraken lists.">Kraken Δ</th>
+              <th className="px-2 py-1.5 font-normal text-left" title="The path price took over the last 24 hours, one point per closed hourly candle, rather than only where it started and ended. Only coins Wick tracks have local candles.">24h Trend</th>
               <th className="px-2 py-1.5 font-normal text-right"></th>
             </tr>
           </thead>

@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from .config import INTERVALS, PAPER_NOTIONAL, PAPER_START_EQUITY
 from .context import build_context
 from .paper import scoreboard
+from .structure import read_structure
 from .timeutil import ms_to_s, now_ms
 
 log = logging.getLogger(__name__)
@@ -124,6 +125,25 @@ def candles(request: Request, symbol: str, interval: str = "1m", limit: int = 50
     symbol = symbol.upper()
     return {"symbol": symbol, "interval": interval, "tracked": symbol in c.ingest.tracked,
             "candles": [x.to_wire() for x in c.store.latest(symbol, interval, limit)]}
+
+
+@router.get("/api/structure")
+def structure(request: Request, symbol: str, interval: str = "1h"):
+    """What a trader's eye picks out of the chart, found deterministically: swings, levels,
+    structure, events; plus the 1h shape and playbook the Analysis tab already uses, so the
+    chart guides and the desk never disagree."""
+    if interval not in INTERVALS:
+        raise HTTPException(400, f"interval must be one of {INTERVALS}")
+    c = ctx(request)
+    symbol = symbol.upper()
+    s = read_structure(c.store.latest(symbol, interval, 500))
+    shape = c.analysis.shapes.get(symbol)
+    rules = c.analysis.rules.get(symbol) or {}
+    f = c.analysis.features.get(symbol)
+    return {**s, "symbol": symbol, "interval": interval,
+            "shape": {"label": shape["label"], "name": shape["name"], "description": shape["description"]} if shape else None,
+            "playbook": rules.get("playbook"), "riskCharacter": rules.get("riskCharacter"), "stance": rules.get("stance"),
+            "moveAtr": f.moveAtr if f else None, "volMultiple": f.volMultiple if f else None, "atrDailyPct": f.atrDailyPct if f else None}
 
 
 @router.get("/api/market")

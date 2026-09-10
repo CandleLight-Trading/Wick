@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, peek } from "../api";
-import CandleChart from "../components/CandleChart";
+import CandleChart, { type Guides } from "../components/CandleChart";
 import IntervalToggle from "../components/IntervalToggle";
 import SymbolPicker from "../components/SymbolPicker";
 import { useLocalStorage } from "../store";
@@ -18,6 +18,7 @@ export default function Charts({ params }: { params: URLSearchParams }) {
   const [selected, setSelected] = useLocalStorage<string[]>("symbols", DEFAULT_SYMBOLS);
   const [interval, setInterval] = useLocalStorage<Interval>("interval", "1m");
   const [layout, setLayout] = useLocalStorage<1 | 4>("layout", 4);
+  const [guides, setGuides] = useLocalStorage<Guides>("chartGuides", "structure");
 
   useEffect(() => {
     api.symbols().then(setAll).catch(console.error);
@@ -45,6 +46,12 @@ export default function Charts({ params }: { params: URLSearchParams }) {
         <SymbolPicker all={all} selected={selected} onChange={setSelected} />
         <div className="ml-auto flex items-center gap-2">
           <IntervalToggle value={interval} onChange={setInterval} />
+          <div className="inline-flex items-center rounded border border-zinc-800 overflow-hidden" title="Chart guides. Off: a bare chart. Structure: swing highs and lows, support and resistance, from Wick's structure engine. Full: adds the shape, playbook, and plain-English sentences you can hover.">
+            <span className="px-2 text-xs text-zinc-500 uppercase tracking-wide">Guides</span>
+            {(["off", "structure", "full"] as const).map((g) => (
+              <button key={g} onClick={() => setGuides(g)} className={`px-2.5 py-1 text-sm capitalize ${guides === g ? "bg-zinc-700 text-white" : "text-zinc-400 hover:bg-zinc-800"}`}>{g}</button>
+            ))}
+          </div>
           <div className="inline-flex rounded border border-zinc-800 overflow-hidden">
             {([1, 4] as const).map((n) => (
               <button key={n} onClick={() => setLayout(n)} className={`px-2.5 py-1 text-sm ${layout === n ? "bg-zinc-700 text-white" : "text-zinc-400 hover:bg-zinc-800"}`}>
@@ -69,10 +76,10 @@ export default function Charts({ params }: { params: URLSearchParams }) {
       </div>
       {ticket && <TradeTicket symbol={ticket} onClose={() => setTicket(null)} onDone={() => { setTicket(null); navigate("prop"); }} />}
       <div className={`flex-1 min-h-0 grid gap-2 ${layout === 4 ? "grid-cols-2 grid-rows-2" : "grid-cols-1 grid-rows-1"}`}>
-        {shown.map((sym) => <CandleChart key={sym} symbol={sym} interval={interval} />)}
+        {shown.map((sym) => <CandleChart key={sym} symbol={sym} interval={interval} guides={guides} />)}
         {shown.length === 0 && <div className="text-zinc-500 text-[15px] p-4">Pick a symbol above.</div>}
       </div>
-      <div className="text-[13px] text-zinc-500">Times are UTC. The last candle is redrawn in place until it closes.</div>
+      <div className="text-[13px] text-zinc-500">Times are UTC. The last candle is redrawn in place until it closes. Guides label what Wick's structure engine sees on these candles: HH/HL higher high and low, LH/LL lower, S/R support and resistance with touch counts.</div>
     </div>
   );
 }

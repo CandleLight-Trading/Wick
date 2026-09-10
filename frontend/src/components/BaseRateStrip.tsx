@@ -1,3 +1,4 @@
+import Term from "./Term";
 import { fmtPct } from "../store";
 import type { BaseRate, HorizonStats } from "../types";
 
@@ -12,19 +13,19 @@ function Cell({ h, minSample }: { h: HorizonStats; minSample: number }) {
       <div className="flex items-baseline gap-1">
         <span className={`font-semibold ${grey ? "" : "text-zinc-100"}`}>{pct(h.hitRateNet)}</span>
         <span className="text-xs">[{pct(h.ciLo)}–{pct(h.ciHi)}]</span>
-        <span className="text-xs text-zinc-500">n={h.n}</span>
+        <Term k="brN" value={h.n} className="text-xs text-zinc-500"><span className="cursor-help">n={h.n}</span></Term>
       </div>
       <div className="text-[13px]">
-        med {fmtPct(h.medianNet! * 100)} <span className="text-zinc-500">IQR {fmtPct(h.p25Net! * 100)}…{fmtPct(h.p75Net! * 100)}</span>
+        <Term k="brMedian" value={h.medianNet! * 100}><span className="cursor-help">med {fmtPct(h.medianNet! * 100)}</span></Term> <Term k="brIqr" className="text-zinc-500"><span className="cursor-help">IQR {fmtPct(h.p25Net! * 100)}…{fmtPct(h.p75Net! * 100)}</span></Term>
       </div>
       {h.firstHalf && h.secondHalf && (
-        <div className="text-xs text-zinc-500" title="Walk-forward: first year vs second year of history. A big drop means the edge was fitted, not found.">
-          yr1 {pct(h.firstHalf.hitRateNet ?? undefined)} (n={h.firstHalf.n}) → yr2 {pct(h.secondHalf.hitRateNet ?? undefined)} (n={h.secondHalf.n})
+        <div className="text-xs text-zinc-500">
+          <Term k="brWalk" value={[h.firstHalf.hitRateNet, h.secondHalf.hitRateNet]}><span className="cursor-help">yr1 {pct(h.firstHalf.hitRateNet ?? undefined)} (n={h.firstHalf.n}) → yr2 {pct(h.secondHalf.hitRateNet ?? undefined)} (n={h.secondHalf.n})</span></Term>
         </div>
       )}
       <div className="text-xs text-zinc-500">
-        gross {pct(h.hitRateGross)} / {fmtPct(h.medianGross! * 100)}
-        {h.overlapping && <span className="ml-1 text-amber-500" title={`Median gap between episodes is ${h.medianGapBars} bars, shorter than this ${h.horizonBars}-bar horizon: outcomes share bars`}>overlapping</span>}
+        <Term k="brGross"><span className="cursor-help">gross {pct(h.hitRateGross)} / {fmtPct(h.medianGross! * 100)}</span></Term>
+        {h.overlapping && <Term k="brOverlap" detail={`median gap ${h.medianGapBars} bars vs a ${h.horizonBars}-bar horizon`} className="ml-1 text-amber-500"><span className="cursor-help">overlapping</span></Term>}
       </div>
     </td>
   );
@@ -47,9 +48,9 @@ export default function BaseRateStrip({ rates, minSample, tests, cost }: { rates
         <table className="w-full text-sm">
           <thead className="text-zinc-500">
             <tr>
-              <th className="text-left px-2 py-1 font-normal">condition (true now)</th>
-              <th className="text-left px-2 py-1 font-normal">episodes</th>
-              {HORIZONS.map((h) => <th key={h} className="text-left px-2 py-1 font-normal">+{h}: hit rate net [95% CI]</th>)}
+              <th className="text-left px-2 py-1 font-normal"><Term k="brCondition"><span className="cursor-help">condition (true now)</span></Term></th>
+              <th className="text-left px-2 py-1 font-normal"><Term k="brEpisodes"><span className="cursor-help">episodes</span></Term></th>
+              {HORIZONS.map((h) => <th key={h} className="text-left px-2 py-1 font-normal"><Term k="brHit" value={h}><span className="cursor-help">+{h}: hit rate net [95% CI]</span></Term></th>)}
             </tr>
           </thead>
           <tbody>

@@ -12,22 +12,22 @@ export default function StatusBadge() {
         <span className="px-2 py-1 rounded bg-red-700 text-white font-semibold">{s.rest.banMessage}</span>
       )}
       {s && (
-        <span title="Binance REST weight used this minute (cap 1200, we throttle at 900)">
+        <span title="Operational: how much of Binance's per-minute request allowance Wick has used (cap 1200, Wick throttles at 900). Only matters if it climbs near the cap.">
           weight {s.rest.usedWeight1m}
         </span>
       )}
       {s && s.broadcast.droppedFrames > 0 && (
         <span title="Frames dropped because this browser could not keep up">dropped {s.broadcast.droppedFrames}</span>
       )}
-      {s && s.ingest.reconnects > 0 && <span title="Backend reconnects to Binance">reconnects {s.ingest.reconnects}</span>}
+      {s && s.ingest.reconnects > 0 && <span title="Operational: how many times the backend has reconnected its Binance data feed since start. Binance closes every connection after 24h, so a small number is routine; gaps are repaired automatically.">reconnects {s.ingest.reconnects}</span>}
       {s && Object.entries(s.exchanges ?? {}).map(([name, ex]) => (
-        <span key={name} className="flex items-center gap-1" title={`${name}: ${ex.state}, ${ex.tracked.length} symbols`}>
+        <span key={name} className="flex items-center gap-1" title={`Second exchange feed (${name}): ${ex.state}, ${ex.tracked.length} of your tracked coins are listed there. Used for the cross-exchange divergence column.`}>
           <span className={`inline-block w-1.5 h-1.5 rounded-full ${ex.state === "live" ? "bg-emerald-500" : "bg-amber-500"}`} />
           {name}
         </span>
       ))}
       {s?.futures && (
-        <span title={s.futures.error ?? `funding/OI from ${s.futures.source}`} className={s.futures.error ? "text-amber-500" : ""}>
+        <span title={s.futures.error ?? `Where funding rates and open interest come from (${s.futures.source}). Binance futures is geo-blocked from this host, so Kraken's perpetuals stand in.`} className={s.futures.error ? "text-amber-500" : ""}>
           perps: {s.futures.source ?? "none"}
         </span>
       )}

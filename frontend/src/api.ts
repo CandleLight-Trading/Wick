@@ -1,4 +1,4 @@
-import type { ResearchJob, Account, AnalysisPayload, ClosePreview, ConditionEvent, ContextData, Interval, MarketRow, PaperPayload, PlanResponse, PositionResearch, PropPayload, Status, SymbolInfo, Trade, WireCandle } from "./types";
+import type { ChartStructure, ResearchJob, Account, AnalysisPayload, ClosePreview, ConditionEvent, ContextData, Interval, MarketRow, PaperPayload, PlanResponse, PositionResearch, PropPayload, Status, SymbolInfo, Trade, WireCandle } from "./types";
 
 /** A 401 anywhere means the session is gone: the app shows the login screen. */
 export const UNAUTHORIZED = "wick:unauthorized";
@@ -38,6 +38,7 @@ export const api = {
       `/api/candles?symbol=${symbol}&interval=${interval}&limit=${limit}`,
     ),
   market: () => get<{ quote: string; rows: MarketRow[] }>("/api/market"),
+  structure: (symbol: string, interval: Interval) => get<ChartStructure>(`/api/structure?symbol=${symbol}&interval=${interval}`),
   context: (symbol: string) => get<ContextData>(`/api/context?symbol=${symbol}`),
   conditionLog: (symbol: string) => get<ConditionEvent[]>(`/api/condition_log?symbol=${symbol}&limit=300`),
   status: () => get<Status>("/api/status"),

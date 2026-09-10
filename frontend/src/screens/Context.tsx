@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, peek } from "../api";
 import BaseRateStrip from "../components/BaseRateStrip";
 import { fmtCompact, fmtNum, fmtPct, fmtPrice, fmtTime, useClickOutside, useLocalStorage } from "../store";
+import Term from "../components/Term";
+import type { Ctx } from "../glossary";
 import type { ConditionEvent, ContextData, FuturesData, SymbolInfo, WireDepth } from "../types";
 import { useServerMessages, wsClient } from "../ws";
 
@@ -14,13 +16,32 @@ function Card({ title, children, className = "" }: { title: string; children: Re
   );
 }
 
-function Row({ label, value, hint }: { label: string; value: React.ReactNode; hint?: string }) {
+function Row({ label, value, hint, k, v, ctx }: { label: string; value: React.ReactNode; hint?: string; k?: string; v?: unknown; ctx?: Ctx }) {
   return (
-    <div className="flex justify-between gap-3 py-1 text-sm" title={hint}>
-      <span className="text-zinc-400">{label}</span>
+    <div className="flex justify-between gap-3 py-1 text-sm" title={k ? undefined : hint}>
+      {k ? <Term k={k} value={v} detail={hint} ctx={ctx}><span className="text-zinc-400 cursor-help">{label}</span></Term> : <span className="text-zinc-400">{label}</span>}
       <span className="num text-zinc-100">{value}</span>
     </div>
   );
+}
+
+function maSentence(symbol: string, d: ContextData): string {
+  const coin = symbol.replace("USDT", "");
+  const rel = (n: string) => { const v = d.ma[n]?.distancePct; return v == null ? null : v >= 0 ? "above" : "below"; };
+  const a = rel("20"), b = rel("50"), c = rel("200");
+  if (!a || !b || !c) return "";
+  if (a === b && b === c) return `${coin} is ${a} its 20-, 50- and 200-hour averages: price is ${a} its short-, medium- and longer-term reference levels, which is what a ${a === "above" ? "sustained rise" : "sustained decline"} looks like.`;
+  return `${coin} is ${a} its 20-hour average, ${b} its 50-hour and ${c} its 200-hour: the timeframes disagree, which is what a transition or a range looks like.`;
+}
+
+/** The relationships, in one sentence: size of the move in the coin's own units, on how much activity. */
+function todaySentence(symbol: string, d: ContextData): string {
+  const coin = symbol.replace("USDT", "");
+  const mv = d.volatility.todayMovePct, atr = d.volatility.todayMoveInAtr, vol = d.volume.multiple;
+  if (mv == null || atr == null) return "";
+  const size = Math.abs(atr) < 0.5 ? "small" : Math.abs(atr) < 1 ? "an ordinary day's worth" : Math.abs(atr) < 2 ? "larger than a typical day" : "far outside a typical day";
+  const volTxt = vol == null ? "" : vol >= 1.5 ? ` on ${vol.toFixed(1)}× normal volume, so it has participation behind it` : vol <= 0.8 ? ` on ${vol.toFixed(1)}× normal volume, so fewer participants than usual are behind it` : ` on about normal volume (${vol.toFixed(1)}×)`;
+  return `Today's move is ${size}: ${coin} is ${mv >= 0 ? "up" : "down"} ${Math.abs(mv).toFixed(2)}% since the UTC close, ${Math.abs(atr).toFixed(2)} of a typical day's range${volTxt}.`;
 }
 
 /** Type a partial symbol, Enter picks the best match. Untracked coins start tracking on pick. */
@@ -75,12 +96,12 @@ function FuturesBlock({ f, spot }: { f: FuturesData; spot: number }) {
           <span className="text-zinc-500">per 8h</span>
           <span className="text-zinc-400 num">{f.fundingAnnualizedPct != null ? `${f.fundingAnnualizedPct >= 0 ? "+" : ""}${f.fundingAnnualizedPct.toFixed(1)}% annualized` : ""}</span>
         </div>
-        <Row label="Who pays" value={f.fundingRate == null ? "–" : f.fundingRate > 0 ? "longs pay shorts" : f.fundingRate < 0 ? "shorts pay longs" : "flat"} />
+        <Row k="ctxWhoPays" v={f.fundingRate} label="Who pays" value={f.fundingRate == null ? "–" : f.fundingRate > 0 ? "longs pay shorts" : f.fundingRate < 0 ? "shorts pay longs" : "flat"} />
         <Row label="Next funding" value={hh ?? "accrues hourly (Kraken)"} />
-        <Row label={`Mark price (${f.source})`} value={fmtPrice(f.markPrice)} />
-        <Row label="Mark vs Binance spot" value={f.basisPct != null ? `${f.basisPct >= 0 ? "+" : ""}${(f.basisPct * 100).toFixed(1)} bps` : "–"} hint={f.source === "kraken-perp" ? "Kraken perps are USD-margined; this basis includes the USDT/USD rate" : undefined} />
-        <Row label="Open interest" value={f.openInterest != null ? `${fmtCompact(f.openInterest)} ${f.symbol.replace("USDT", "")}` : "–"} />
-        <Row label="Open interest, notional" value={f.openInterestNotional != null ? `$${fmtCompact(f.openInterestNotional)}` : "–"} />
+        <Row k="ctxMarkPrice" label={`Mark price (${f.source})`} value={fmtPrice(f.markPrice)} />
+        <Row k="ctxMarkVsSpot" v={f.basisPct != null ? f.basisPct * 100 : null} label="Mark vs Binance spot" value={f.basisPct != null ? `${f.basisPct >= 0 ? "+" : ""}${(f.basisPct * 100).toFixed(1)} bps` : "–"} hint={f.source === "kraken-perp" ? "Kraken perps are USD-margined; this basis includes the USDT/USD rate" : undefined} />
+        <Row k="ctxOpenInterest" label="Open interest" value={f.openInterest != null ? `${fmtCompact(f.openInterest)} ${f.symbol.replace("USDT", "")}` : "–"} />
+        <Row k="oi" v={f.openInterestNotional} label="Open interest, notional" value={f.openInterestNotional != null ? `$${fmtCompact(f.openInterestNotional)}` : "–"} />
         <div className="text-xs text-zinc-500 mt-1">spot {fmtPrice(spot)} · source {f.source}</div>
       </div>
       <div>
@@ -202,31 +223,33 @@ export default function Context({ params }: { params: URLSearchParams }) {
               last 24h: {fmtCompact(data.volume.last24h)} {symbol.replace("USDT", "")}<br />
               avg per UTC day over {data.volume.days} closed days: {fmtCompact(data.volume.avg30d)}
             </div>
+            <div className="ml-auto max-w-md text-[15px] text-zinc-200 leading-relaxed self-center">{todaySentence(symbol, data)}</div>
           </section>
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
             <Card title="Volatility (is today's move large for this asset?)">
-              <Row label="Move since yesterday's UTC close" value={fmtPct(data.volatility.todayMovePct)} />
-              <Row label="… in units of daily ATR(14)" value={data.volatility.todayMoveInAtr != null ? `${fmtNum(data.volatility.todayMoveInAtr)}×` : "–"} hint="Above 1 means today has already moved more than a typical day's range" />
-              <Row label="ATR(14), daily bars" value={`${fmtPrice(data.volatility.atr14Daily)} (${fmtNum(data.volatility.atr14DailyPct)}%)`} />
-              <Row label="ATR(14), hourly bars" value={fmtPrice(data.volatility.atr14Hourly)} />
-              <Row label="Realized vol, 7d, annualized" value={data.volatility.realized7dAnnualized != null ? `${(data.volatility.realized7dAnnualized * 100).toFixed(0)}%` : "–"} />
-              <Row label="Realized vol, 30d, annualized" value={data.volatility.realized30dAnnualized != null ? `${(data.volatility.realized30dAnnualized * 100).toFixed(0)}%` : "–"} />
+              <Row k="ctxMoveToday" v={data.volatility.todayMovePct} ctx={{ symbol }} label="Move since yesterday's UTC close" value={fmtPct(data.volatility.todayMovePct)} />
+              <Row k="move" v={data.volatility.todayMoveInAtr} ctx={{ symbol, atrPct: data.volatility.atr14DailyPct }} label="… in units of daily ATR(14)" value={data.volatility.todayMoveInAtr != null ? `${fmtNum(data.volatility.todayMoveInAtr)}×` : "–"} />
+              <Row k="ctxAtrDaily" v={data.volatility.atr14DailyPct} ctx={{ symbol, price: data.price }} label="ATR(14), daily bars" value={`${fmtPrice(data.volatility.atr14Daily)} (${fmtNum(data.volatility.atr14DailyPct)}%)`} />
+              <Row k="ctxAtrHourly" v={data.volatility.atr14Hourly} ctx={{ symbol, price: data.price }} label="ATR(14), hourly bars" value={fmtPrice(data.volatility.atr14Hourly)} />
+              <Row k="ctxRealizedVol" v={data.volatility.realized7dAnnualized} ctx={{ symbol }} hint="7d" label="Realized vol, 7d, annualized" value={data.volatility.realized7dAnnualized != null ? `${(data.volatility.realized7dAnnualized * 100).toFixed(0)}%` : "–"} />
+              <Row k="ctxRealizedVol" v={data.volatility.realized30dAnnualized} ctx={{ symbol }} hint="30d" label="Realized vol, 30d, annualized" value={data.volatility.realized30dAnnualized != null ? `${(data.volatility.realized30dAnnualized * 100).toFixed(0)}%` : "–"} />
               {data.impliedVol && (
                 <>
-                  <Row label={`Implied vol, 30d (${data.impliedVol.source})`} value={`${data.impliedVol.impliedVol30dPct.toFixed(1)}%`} />
-                  <Row label="Variance premium (implied − realized)" value={data.impliedVol.variancePremiumPct != null ? `${data.impliedVol.variancePremiumPct >= 0 ? "+" : ""}${data.impliedVol.variancePremiumPct.toFixed(1)} pts` : "–"} hint="Positive is normal: options price more movement than has happened. Negative is unusual and worth noticing." />
+                  <Row k="ctxImpliedVol" v={data.impliedVol.impliedVol30dPct} ctx={{ symbol }} label={`Implied vol, 30d (${data.impliedVol.source})`} value={`${data.impliedVol.impliedVol30dPct.toFixed(1)}%`} />
+                  <Row k="ctxVariancePremium" v={data.impliedVol.variancePremiumPct} label="Variance premium (implied − realized)" value={data.impliedVol.variancePremiumPct != null ? `${data.impliedVol.variancePremiumPct >= 0 ? "+" : ""}${data.impliedVol.variancePremiumPct.toFixed(1)} pts` : "–"} hint="Positive is normal: options price more movement than has happened. Negative is unusual and worth noticing." />
                 </>
               )}
-              <Row label="Taker buy share, 24h" value={data.flow?.takerBuyRatio24 != null ? `${(data.flow.takerBuyRatio24 * 100).toFixed(0)}%` : "–"} hint="Share of volume bought by aggressors crossing the spread. Above 50% buyers were pressing." />
-              <Row label="Taker buy share, 7d / 30d mean" value={`${data.flow?.takerBuyRatio7d != null ? (data.flow.takerBuyRatio7d * 100).toFixed(0) : "–"}% / ${data.flow?.takerBuyRatio30dMean != null ? (data.flow.takerBuyRatio30dMean * 100).toFixed(0) : "–"}%`} />
+              <Row k="takers" v={data.flow?.takerBuyRatio24} label="Taker buy share, 24h" value={data.flow?.takerBuyRatio24 != null ? `${(data.flow.takerBuyRatio24 * 100).toFixed(0)}%` : "–"} hint="Share of volume bought by aggressors crossing the spread. Above 50% buyers were pressing." />
+              <Row k="ctxTakerBaseline" v={data.flow?.takerBuyRatio24} hint={data.flow?.takerBuyRatio30dMean != null ? String(data.flow.takerBuyRatio30dMean) : undefined} label="Taker buy share, 7d / 30d mean" value={`${data.flow?.takerBuyRatio7d != null ? (data.flow.takerBuyRatio7d * 100).toFixed(0) : "–"}% / ${data.flow?.takerBuyRatio30dMean != null ? (data.flow.takerBuyRatio30dMean * 100).toFixed(0) : "–"}%`} />
             </Card>
 
             <Card title="Price vs moving averages (1h bars)">
+              <div className="text-sm text-zinc-300 mb-1">{maSentence(symbol, data)}</div>
               {["20", "50", "200"].map((n) => (
-                <Row key={n} label={`${n}-period MA ${data.ma[n].value != null ? fmtPrice(data.ma[n].value) : ""}`} value={fmtPct(data.ma[n].distancePct)} hint="Percentage distance of price from the average. Distance, not a crossover signal." />
+                <Row key={n} k="ctxMa" v={data.ma[n].distancePct} hint={n} label={`${n}-period MA ${data.ma[n].value != null ? fmtPrice(data.ma[n].value) : ""}`} value={fmtPct(data.ma[n].distancePct)} />
               ))}
-              <Row label="Correlation to BTC, 30d daily returns" value={data.correlationBtc30d != null ? fmtNum(data.correlationBtc30d) : "–"} hint="If everything you watch sits near 0.9 you effectively hold one position" />
+              {symbol !== "BTCUSDT" && <Row k="ctxCorrelation" v={data.correlationBtc30d} ctx={{ symbol }} label="Correlation to BTC, 30d daily returns" value={data.correlationBtc30d != null ? fmtNum(data.correlationBtc30d) : "–"} />}
             </Card>
 
             <Card title={`RSI(14) on 1h bars: ${data.rsi.value != null ? data.rsi.value.toFixed(1) : "–"}`}>
@@ -242,7 +265,7 @@ export default function Context({ params }: { params: URLSearchParams }) {
               </div>
               <div className="flex justify-between text-xs text-zinc-500 mt-1"><span>0</span><span>50</span><span>100</span></div>
               <div className="text-sm text-zinc-400 mt-1">
-                Current value is at the <span className="text-zinc-100 num">{data.rsi.histogram.percentile?.toFixed(0)}th</span> percentile of this symbol's own {data.rsi.histogram.n.toLocaleString()} hourly readings.
+                <Term k="ctxRsi" value={data.rsi.value} detail={data.rsi.histogram.percentile != null ? String(Math.round(data.rsi.histogram.percentile)) : undefined} ctx={{ symbol }}><span className="cursor-help">Current value is at the <span className="text-zinc-100 num">{data.rsi.histogram.percentile?.toFixed(0)}th</span> percentile of this symbol's own {data.rsi.histogram.n.toLocaleString()} hourly readings.</span></Term>
               </div>
             </Card>
 
@@ -250,10 +273,10 @@ export default function Context({ params }: { params: URLSearchParams }) {
               {data.book || book ? (
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
                   <div>
-                    <Row label="Spread (live, top of book)" value={liveSpread != null ? `${fmtNum(liveSpread, 2)} bps` : "…"} />
-                    {book && book.bids[0] && <Row label="Best bid / ask (live)" value={`${fmtPrice(book.bids[0][0])} / ${fmtPrice(book.asks[0][0])}`} />}
+                    <Row k="ctxSpread" v={liveSpread} label="Spread (live, top of book)" value={liveSpread != null ? `${fmtNum(liveSpread, 2)} bps` : "…"} />
+                    {book && book.bids[0] && <Row k="ctxBestBidAsk" label="Best bid / ask (live)" value={`${fmtPrice(book.bids[0][0])} / ${fmtPrice(book.asks[0][0])}`} />}
                     {data.book && <Row label={`Spread (${data.book.source} snapshot, ${data.book.ageS.toFixed(0)}s old)`} value={`${fmtNum(data.book.spreadBps, 2)} bps`} />}
-                    {data.book && <Row label={`Snapshot depth (${data.book.levels} levels/side)`} value={`±${fmtNum(data.book.coveragePct, 2)}% of mid`} />}
+                    {data.book && <Row k="ctxDepth" v={data.book.coveragePct} label={`Snapshot depth (${data.book.levels} levels/side)`} value={`±${fmtNum(data.book.coveragePct, 2)}% of mid`} />}
                     {!data.book && <div className="text-zinc-500 mt-1">Depth bands arrive with the next refresh (≤30s).</div>}
                     {data.slippage && (
                       <div className="mt-2">
@@ -269,9 +292,9 @@ export default function Context({ params }: { params: URLSearchParams }) {
                     return (
                       <div key={b.widthPct} className={covered ? "" : "opacity-50"} title={covered ? undefined : "The snapshot does not reach this far from mid; numbers understate real depth"}>
                         <div className="text-zinc-500 mb-1">within ±{b.widthPct}% of mid {covered ? "" : "(not fully covered)"}</div>
-                        <Row label="bid notional" value={fmtCompact(b.bidNotional)} />
-                        <Row label="ask notional" value={fmtCompact(b.askNotional)} />
-                        <Row label="imbalance (bid−ask)/(bid+ask)" value={b.imbalance != null ? fmtNum(b.imbalance, 2) : "–"} />
+                        <Row k="ctxNotional" label="bid notional" value={fmtCompact(b.bidNotional)} />
+                        <Row k="ctxNotional" label="ask notional" value={fmtCompact(b.askNotional)} />
+                        <Row k="ctxImbalance" v={b.imbalance} label="imbalance (bid−ask)/(bid+ask)" value={b.imbalance != null ? fmtNum(b.imbalance, 2) : "–"} />
                         {b.imbalance != null && (
                           <div className="h-1.5 mt-1 bg-zinc-800 rounded overflow-hidden flex">
                             <div className="bg-emerald-500/70" style={{ width: `${((b.imbalance + 1) / 2) * 100}%` }} />
@@ -301,7 +324,7 @@ export default function Context({ params }: { params: URLSearchParams }) {
                 <div key={name} className="mb-2">
                   <Row label="Binance last" value={fmtPrice(data.price)} />
                   <Row label={`${name} last (${x.ageS.toFixed(0)}s old)`} value={fmtPrice(x.last)} />
-                  <Row label="Divergence" value={x.divergenceBps == null ? "–" : `${x.divergenceBps >= 0 ? "+" : ""}${x.divergenceBps.toFixed(1)} bps`} hint="Kraken minus Binance, in basis points of the Binance price. Compare with the spread and the 0.20% fee before reading anything into it." />
+                  <Row k="divergence" v={x.divergenceBps} label="Divergence" value={x.divergenceBps == null ? "–" : `${x.divergenceBps >= 0 ? "+" : ""}${x.divergenceBps.toFixed(1)} bps`} hint="Kraken minus Binance, in basis points of the Binance price. Compare with the spread and the 0.20% fee before reading anything into it." />
                   <Row label={`${name} change since 00:00 UTC`} value={fmtPct(x.changePct)} hint="Kraken reports change since today's UTC open, not a rolling 24h window" />
                 </div>
               ))}
@@ -311,12 +334,13 @@ export default function Context({ params }: { params: URLSearchParams }) {
           <BaseRateStrip rates={data.baseRates} minSample={data.minSample} tests={data.testsEvaluated} cost={data.roundTripCost} />
 
           <Card title="Live condition log (out-of-sample: recorded before the outcome was known)">
+            <div className="text-sm text-zinc-400 mb-2"><Term k="logOos"><span className="cursor-help">Out-of-sample</span></Term>: each row was written when the condition first became true, before its result was known, so this table is a cleaner ongoing test of whether the historical base rates above keep holding. Onsets are recorded as hourly candles close; the +1h, +4h and +24h columns fill in as time passes.</div>
             {events.length === 0 ? (
               <div className="text-sm text-zinc-500">Nothing logged yet. Onsets are recorded as 1h candles close; forward returns fill in over the following 24h.</div>
             ) : (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 text-sm">
                 <table className="w-full num">
-                  <thead className="text-zinc-500"><tr><th className="text-left font-normal">condition</th><th className="text-right font-normal">onsets</th><th className="text-right font-normal">resolved @24h</th><th className="text-right font-normal">positive net</th></tr></thead>
+                  <thead className="text-zinc-500"><tr><th className="text-left font-normal"><Term k="brCondition"><span className="cursor-help">condition</span></Term></th><th className="text-right font-normal"><Term k="logOnsets"><span className="cursor-help">onsets</span></Term></th><th className="text-right font-normal"><Term k="logResolved"><span className="cursor-help">resolved @24h</span></Term></th><th className="text-right font-normal"><Term k="logPositive"><span className="cursor-help">positive net</span></Term></th></tr></thead>
                   <tbody>
                     {logSummary.map(([name, s]) => (
                       <tr key={name} className="border-t border-zinc-900">
@@ -330,7 +354,7 @@ export default function Context({ params }: { params: URLSearchParams }) {
                 </table>
                 <div className="max-h-48 overflow-auto">
                   <table className="w-full num">
-                    <thead className="text-zinc-500 sticky top-0 bg-zinc-950"><tr><th className="text-left font-normal">time (UTC)</th><th className="text-left font-normal">condition</th><th className="text-right font-normal">+1h</th><th className="text-right font-normal">+4h</th><th className="text-right font-normal">+24h</th></tr></thead>
+                    <thead className="text-zinc-500 sticky top-0 bg-zinc-950"><tr><th className="text-left font-normal">time (UTC)</th><th className="text-left font-normal"><Term k="brCondition"><span className="cursor-help">condition</span></Term></th><th className="text-right font-normal"><Term k="brHorizon" value="1h"><span className="cursor-help">+1h</span></Term></th><th className="text-right font-normal"><Term k="brHorizon" value="4h"><span className="cursor-help">+4h</span></Term></th><th className="text-right font-normal"><Term k="brHorizon" value="24h"><span className="cursor-help">+24h</span></Term></th></tr></thead>
                     <tbody>
                       {events.slice(0, 100).map((e) => (
                         <tr key={`${e.condition}-${e.time}`} className="border-t border-zinc-900 text-zinc-400">

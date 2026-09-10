@@ -104,6 +104,27 @@ export type ServerMsg =
   | ({ type: "research" } & ResearchJob)
   | { type: "scan"; lastScan: number; symbol?: string };
 
+export interface ChartStructure {
+  ok: boolean;
+  symbol: string;
+  interval: Interval;
+  atr: number;
+  price: number;
+  structure: "uptrend" | "downtrend" | "range";
+  swings: { time: number; price: number; kind: "high" | "low"; label: string }[];
+  levels: { price: number; touches: number; lastTime: number; kind: "support" | "resistance" }[];
+  events: { kind: "breakout" | "breakdown" | "compression" | "extension" | "pullback" | "range"; level?: number; onVolume?: boolean; ratio?: number; atr?: number; ma20?: number; time?: number }[];
+  ma20: number | null;
+  extensionAtr: number | null;
+  shape: { label: string; name: string; description: string } | null;
+  playbook: string | null;
+  riskCharacter: string | null;
+  stance: string | null;
+  moveAtr: number | null;
+  volMultiple: number | null;
+  atrDailyPct: number | null;
+}
+
 export interface ResearchJob {
   symbol: string;
   state: "queued" | "running" | "done" | "failed";
